@@ -1,0 +1,68 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm_password
+      POSTGRES_DB: crm_erp
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm_erp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://crm:crm_password@postgres:5432/crm_erp?schema=public
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: dev-secret-change-me-please-32bytes
+      APP_URL: http://localhost:3000
+      UPLOADS_DIR: /app/uploads
+      CRON_SECRET: dev-cron-secret
+      IMAP_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      SEED_ADMIN_EMAIL: admin@example.com
+      SEED_ADMIN_PASSWORD: ChangeMe123!
+      SEED_ADMIN_NAME: Admin User
+    volumes:
+      - uploads_data:/app/uploads
+
+  # Optional background worker that periodically runs automations & email
+  # sync without needing an external cron trigger. Comment out if you'd
+  # rather trigger POST /api/automations/run from Easypanel's Cron feature.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://crm:crm_password@postgres:5432/crm_erp?schema=public
+      IMAP_ENCRYPTION_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      WORKER_INTERVAL_MINUTES: 15
+    volumes:
+      - uploads_data:/app/uploads
+
+volumes:
+  postgres_data:
+  uploads_data:

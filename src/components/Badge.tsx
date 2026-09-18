@@ -1,0 +1,41 @@
+const COLORS: Record<string, string> = {
+  DRAFT: 'bg-slate-100 text-slate-700',
+  SENT: 'bg-blue-100 text-blue-700',
+  ACCEPTED: 'bg-green-100 text-green-700',
+  DECLINED: 'bg-red-100 text-red-700',
+  EXPIRED: 'bg-slate-100 text-slate-500',
+  CONFIRMED: 'bg-blue-100 text-blue-700',
+  SHIPPED: 'bg-indigo-100 text-indigo-700',
+  DELIVERED: 'bg-green-100 text-green-700',
+  CANCELLED: 'bg-red-100 text-red-700',
+  PARTIAL: 'bg-amber-100 text-amber-700',
+  PAID: 'bg-green-100 text-green-700',
+  OVERDUE: 'bg-red-100 text-red-700',
+  UNPAID: 'bg-amber-100 text-amber-700',
+  TODO: 'bg-slate-100 text-slate-700',
+  IN_PROGRESS: 'bg-blue-100 text-blue-700',
+  DONE: 'bg-green-100 text-green-700',
+  RECEIVED: 'bg-green-100 text-green-700',
+  PARTIALLY_RECEIVED: 'bg-amber-100 text-amber-700',
+  NEW: 'bg-slate-100 text-slate-700',
+  QUALIFIED: 'bg-blue-100 text-blue-700',
+  PROPOSAL: 'bg-indigo-100 text-indigo-700',
+  NEGOTIATION: 'bg-amber-100 text-amber-700',
+  WON: 'bg-green-100 text-green-700',
+  LOST: 'bg-red-100 text-red-700',
+  LOW: 'bg-slate-100 text-slate-700',
+  MEDIUM: 'bg-blue-100 text-blue-700',
+  HIGH: 'bg-amber-100 text-amber-700',
+  URGENT: 'bg-red-100 text-red-700',
+  active: 'bg-green-100 text-green-700',
+  inactive: 'bg-slate-100 text-slate-500',
+  LOW_STOCK: 'bg-red-100 text-red-700',
+  PENDING: 'bg-amber-100 text-amber-700',
+  READ: 'bg-green-100 text-green-700',
+  FAILED: 'bg-red-100 text-red-700',
+};
+
+export default function Badge({ label }: { label: string }) {
+  const cls = COLORS[label] || 'bg-slate-100 text-slate-700';
+  return <span className={`badge ${cls}`}>{label.replace(/_/g, ' ')}</span>;
+}

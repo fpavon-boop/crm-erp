@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f8fafc;
+}
+
+body {
+  background-color: var(--bg);
+  color: #0f172a;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none;
+}
+.btn-primary {
+  @apply btn bg-brand-600 text-white hover:bg-brand-700;
+}
+.btn-secondary {
+  @apply btn bg-white text-slate-700 border border-slate-300 hover:bg-slate-50;
+}
+.btn-danger {
+  @apply btn bg-red-600 text-white hover:bg-red-700;
+}
+.card {
+  @apply bg-white rounded-lg border border-slate-200 shadow-sm;
+}
+.input {
+  @apply block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500;
+}
+.label {
+  @apply block text-sm font-medium text-slate-700 mb-1;
+}
+.table-base {
+  @apply min-w-full divide-y divide-slate-200 text-sm;
+}
+.table-base th {
+  @apply px-3 py-2 text-left font-semibold text-slate-600 bg-slate-50;
+}
+.table-base td {
+  @apply px-3 py-2 border-t border-slate-100;
+}
+.badge {
+  @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+}

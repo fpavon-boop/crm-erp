@@ -1,0 +1,963 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Auth / Users
+// =============================================================================
+
+enum Role {
+  ADMIN
+  SALES
+  OPERATIONS
+  ACCOUNTING
+}
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  passwordHash  String
+  role          Role     @default(SALES)
+  active        Boolean  @default(true)
+  avatarUrl     String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  ownedCompanies   Company[]        @relation("CompanyOwner")
+  opportunities    Opportunity[]    @relation("OpportunityOwner")
+  tasksAssigned    Task[]           @relation("TaskAssignee")
+  tasksCreated     Task[]           @relation("TaskCreator")
+  calendarEvents   CalendarEvent[]  @relation("EventCreator")
+  notes            Note[]
+  documents        Document[]
+  communicationLogs CommunicationLog[]
+  auditLogs        AuditLog[]
+  emailAccounts    EmailAccount[]
+  employee         Employee?
+  automationRules  AutomationRule[]
+  invoicesCreated  Invoice[]
+}
+
+model Employee {
+  id         String    @id @default(cuid())
+  userId     String?   @unique
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  firstName  String
+  lastName   String
+  email      String?
+  phone      String?
+  position   String?
+  department String?
+  hireDate   DateTime?
+  active     Boolean   @default(true)
+  notes      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+}
+
+// =============================================================================
+// Companies / Contacts (customers, suppliers, partners)
+// =============================================================================
+
+enum CompanyType {
+  CUSTOMER
+  SUPPLIER
+  BOTH
+  PARTNER
+}
+
+model Company {
+  id          String      @id @default(cuid())
+  name        String
+  type        CompanyType @default(CUSTOMER)
+  taxId       String?
+  industry    String?
+  website     String?
+  addressLine1 String?
+  addressLine2 String?
+  city        String?
+  state       String?
+  postalCode  String?
+  country     String?
+  notes       String?
+  ownerId     String?
+  owner       User?       @relation("CompanyOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  active      Boolean     @default(true)
+
+  // WordPress / WooCommerce sync
+  externalSource String?
+  externalId     String?
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  phones      CompanyPhone[]
+  emails      CompanyEmail[]
+  contacts    Contact[]
+  notesList   Note[]
+  documents   Document[]
+  communicationLogs CommunicationLog[]
+  opportunities Opportunity[]
+  quotes      Quote[]
+  salesOrders SalesOrder[]
+  invoices    Invoice[]
+  purchaseOrders PurchaseOrder[]
+  supplierInvoices SupplierInvoice[]
+  emailMessages EmailMessage[]
+  whatsappMessages WhatsAppMessage[]
+  wordpressLeads WordPressLead[]
+  auditLogs   AuditLog[]
+
+  @@index([type])
+  @@unique([externalSource, externalId])
+}
+
+model CompanyPhone {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  label     String  @default("main")
+  number    String
+}
+
+model CompanyEmail {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  label     String  @default("main")
+  address   String
+}
+
+model Contact {
+  id         String   @id @default(cuid())
+  firstName  String
+  lastName   String
+  email      String?
+  phone      String?
+  mobile     String?
+  position   String?
+  companyId  String?
+  company    Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  notes      String?
+  active     Boolean  @default(true)
+
+  externalSource String?
+  externalId     String?
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  opportunities Opportunity[]
+  quotes        Quote[]
+  salesOrders   SalesOrder[]
+  invoices      Invoice[]
+  emailMessages EmailMessage[]
+  whatsappMessages WhatsAppMessage[]
+  wordpressLeads WordPressLead[]
+  communicationLogs CommunicationLog[]
+  notesList     Note[]
+
+  @@index([companyId])
+  @@unique([externalSource, externalId])
+}
+
+// =============================================================================
+// Notes / Documents / Communication history / Audit
+// =============================================================================
+
+enum RelatedEntityType {
+  COMPANY
+  CONTACT
+  OPPORTUNITY
+  QUOTE
+  SALES_ORDER
+  INVOICE
+  PURCHASE_ORDER
+  SUPPLIER_INVOICE
+  PRODUCT
+  TASK
+}
+
+model Note {
+  id         String            @id @default(cuid())
+  entityType RelatedEntityType
+  entityId   String
+  body       String
+  authorId   String
+  author     User              @relation(fields: [authorId], references: [id])
+  companyId  String?
+  company    Company?          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contactId  String?
+  contact    Contact?          @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  createdAt  DateTime          @default(now())
+
+  @@index([entityType, entityId])
+}
+
+model Document {
+  id         String            @id @default(cuid())
+  entityType RelatedEntityType
+  entityId   String
+  filename   String
+  storedPath String
+  mimeType   String
+  size       Int
+  companyId  String?
+  company    Company?          @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  uploadedById String
+  uploadedBy User              @relation(fields: [uploadedById], references: [id])
+  createdAt  DateTime          @default(now())
+
+  @@index([entityType, entityId])
+}
+
+enum CommunicationType {
+  EMAIL
+  CALL
+  MEETING
+  WHATSAPP
+  NOTE
+  SMS
+}
+
+enum CommunicationDirection {
+  INBOUND
+  OUTBOUND
+}
+
+model CommunicationLog {
+  id         String                 @id @default(cuid())
+  type       CommunicationType
+  direction  CommunicationDirection
+  subject    String?
+  body       String?
+  companyId  String?
+  company    Company?               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contactId  String?
+  contact    Contact?               @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?                  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  occurredAt DateTime               @default(now())
+
+  @@index([companyId])
+  @@index([contactId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String
+  companyId  String?
+  company    Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  changes    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// =============================================================================
+// Inventory
+// =============================================================================
+
+model Product {
+  id            String    @id @default(cuid())
+  sku           String    @unique
+  name          String
+  description   String?
+  category      String?
+  unit          String    @default("unit")
+  price         Decimal   @default(0) @db.Decimal(14, 2)
+  cost          Decimal   @default(0) @db.Decimal(14, 2)
+  taxRate       Decimal   @default(0) @db.Decimal(5, 2)
+  trackInventory Boolean  @default(true)
+  reorderPoint  Int       @default(0)
+  active        Boolean   @default(true)
+
+  externalSource String?
+  externalId     String?
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  variants      ProductVariant[]
+  quoteItems    QuoteItem[]
+  salesOrderItems SalesOrderItem[]
+  invoiceItems  InvoiceItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+  goodsReceiptItems GoodsReceiptItem[]
+
+  @@index([externalSource, externalId])
+}
+
+model ProductVariant {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name        String   @default("Default")
+  sku         String   @unique
+  attributes  Json?
+  priceDelta  Decimal  @default(0) @db.Decimal(14, 2)
+  active      Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  stockLevels StockLevel[]
+  movements   StockMovement[]
+  quoteItems  QuoteItem[]
+  salesOrderItems SalesOrderItem[]
+  invoiceItems InvoiceItem[]
+  purchaseOrderItems PurchaseOrderItem[]
+  goodsReceiptItems GoodsReceiptItem[]
+}
+
+model Warehouse {
+  id        String   @id @default(cuid())
+  name      String
+  address   String?
+  isDefault Boolean  @default(false)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  stockLevels StockLevel[]
+  movements   StockMovement[]
+}
+
+model StockLevel {
+  id               String         @id @default(cuid())
+  productVariantId String
+  productVariant   ProductVariant @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+  warehouseId      String
+  warehouse        Warehouse      @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  quantity         Int            @default(0)
+
+  @@unique([productVariantId, warehouseId])
+}
+
+enum StockMovementType {
+  IN
+  OUT
+  ADJUSTMENT
+  TRANSFER
+}
+
+model StockMovement {
+  id               String            @id @default(cuid())
+  productVariantId String
+  productVariant   ProductVariant    @relation(fields: [productVariantId], references: [id], onDelete: Cascade)
+  warehouseId      String
+  warehouse        Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  type             StockMovementType
+  quantity         Int
+  reason           String?
+  referenceType    String?
+  referenceId      String?
+  createdAt        DateTime          @default(now())
+
+  @@index([productVariantId])
+  @@index([referenceType, referenceId])
+}
+
+// =============================================================================
+// Sales: Opportunities / Pipeline / Quotes / Orders
+// =============================================================================
+
+enum PipelineStage {
+  NEW
+  QUALIFIED
+  PROPOSAL
+  NEGOTIATION
+  WON
+  LOST
+}
+
+model Opportunity {
+  id                String        @id @default(cuid())
+  title             String
+  companyId         String?
+  company           Company?      @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  contactId         String?
+  contact           Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  stage             PipelineStage @default(NEW)
+  value             Decimal       @default(0) @db.Decimal(14, 2)
+  currency          String        @default("USD")
+  probability       Int           @default(20)
+  expectedCloseDate DateTime?
+  ownerId           String?
+  owner             User?         @relation("OpportunityOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  notes             String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  quotes            Quote[]
+
+  @@index([stage])
+}
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+}
+
+model Quote {
+  id            String      @id @default(cuid())
+  number        String      @unique
+  companyId     String?
+  company       Company?    @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  contactId     String?
+  contact       Contact?    @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  opportunityId String?
+  opportunity   Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: SetNull)
+  status        QuoteStatus @default(DRAFT)
+  subtotal      Decimal     @default(0) @db.Decimal(14, 2)
+  taxTotal      Decimal     @default(0) @db.Decimal(14, 2)
+  discountTotal Decimal     @default(0) @db.Decimal(14, 2)
+  total         Decimal     @default(0) @db.Decimal(14, 2)
+  validUntil    DateTime?
+  notes         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  items         QuoteItem[]
+  salesOrders   SalesOrder[]
+
+  @@index([status])
+}
+
+model QuoteItem {
+  id               String          @id @default(cuid())
+  quoteId          String
+  quote            Quote           @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  productId        String?
+  product          Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productVariantId String?
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id], onDelete: SetNull)
+  description      String
+  quantity         Decimal         @default(1) @db.Decimal(12, 2)
+  unitPrice        Decimal         @default(0) @db.Decimal(14, 2)
+  taxRate          Decimal         @default(0) @db.Decimal(5, 2)
+  discount         Decimal         @default(0) @db.Decimal(14, 2)
+}
+
+enum SalesOrderStatus {
+  DRAFT
+  CONFIRMED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+model SalesOrder {
+  id          String           @id @default(cuid())
+  number      String           @unique
+  companyId   String?
+  company     Company?         @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  contactId   String?
+  contact     Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  quoteId     String?
+  quote       Quote?           @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  status      SalesOrderStatus @default(DRAFT)
+  subtotal    Decimal          @default(0) @db.Decimal(14, 2)
+  taxTotal    Decimal          @default(0) @db.Decimal(14, 2)
+  discountTotal Decimal        @default(0) @db.Decimal(14, 2)
+  total       Decimal          @default(0) @db.Decimal(14, 2)
+  notes       String?
+
+  externalSource String?
+  externalId     String?
+
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  items       SalesOrderItem[]
+  invoices    Invoice[]
+
+  @@index([status])
+  @@unique([externalSource, externalId])
+}
+
+model SalesOrderItem {
+  id               String          @id @default(cuid())
+  salesOrderId     String
+  salesOrder       SalesOrder      @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  productId        String?
+  product          Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productVariantId String?
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id], onDelete: SetNull)
+  description      String
+  quantity         Decimal         @default(1) @db.Decimal(12, 2)
+  unitPrice        Decimal         @default(0) @db.Decimal(14, 2)
+  taxRate          Decimal         @default(0) @db.Decimal(5, 2)
+  discount         Decimal         @default(0) @db.Decimal(14, 2)
+}
+
+// =============================================================================
+// Invoicing
+// =============================================================================
+
+enum InvoiceType {
+  INVOICE
+  ESTIMATE
+  RECEIPT
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PARTIAL
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  number        String        @unique
+  type          InvoiceType   @default(INVOICE)
+  companyId     String?
+  company       Company?      @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  contactId     String?
+  contact       Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  salesOrderId  String?
+  salesOrder    SalesOrder?   @relation(fields: [salesOrderId], references: [id], onDelete: SetNull)
+  status        InvoiceStatus @default(DRAFT)
+  subtotal      Decimal       @default(0) @db.Decimal(14, 2)
+  taxTotal      Decimal       @default(0) @db.Decimal(14, 2)
+  discountTotal Decimal       @default(0) @db.Decimal(14, 2)
+  total         Decimal       @default(0) @db.Decimal(14, 2)
+  amountPaid    Decimal       @default(0) @db.Decimal(14, 2)
+  issueDate     DateTime      @default(now())
+  dueDate       DateTime?
+  pdfPath       String?
+  notes         String?
+  createdById   String?
+  createdBy     User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  items         InvoiceItem[]
+  payments      Payment[]
+
+  @@index([status])
+  @@index([dueDate])
+}
+
+model InvoiceItem {
+  id               String          @id @default(cuid())
+  invoiceId        String
+  invoice          Invoice         @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId        String?
+  product          Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productVariantId String?
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id], onDelete: SetNull)
+  description      String
+  quantity         Decimal         @default(1) @db.Decimal(12, 2)
+  unitPrice        Decimal         @default(0) @db.Decimal(14, 2)
+  taxRate          Decimal         @default(0) @db.Decimal(5, 2)
+  discount         Decimal         @default(0) @db.Decimal(14, 2)
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  amount    Decimal  @db.Decimal(14, 2)
+  method    String
+  reference String?
+  paidAt    DateTime @default(now())
+}
+
+// =============================================================================
+// Purchasing
+// =============================================================================
+
+enum PurchaseOrderStatus {
+  DRAFT
+  SENT
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id          String              @id @default(cuid())
+  number      String              @unique
+  supplierId  String?
+  supplier    Company?            @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  status      PurchaseOrderStatus @default(DRAFT)
+  subtotal    Decimal             @default(0) @db.Decimal(14, 2)
+  taxTotal    Decimal             @default(0) @db.Decimal(14, 2)
+  total       Decimal             @default(0) @db.Decimal(14, 2)
+  expectedDate DateTime?
+  notes       String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  items       PurchaseOrderItem[]
+  goodsReceipts GoodsReceipt[]
+  supplierInvoices SupplierInvoice[]
+}
+
+model PurchaseOrderItem {
+  id               String          @id @default(cuid())
+  purchaseOrderId  String
+  purchaseOrder    PurchaseOrder   @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId        String?
+  product          Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productVariantId String?
+  productVariant   ProductVariant? @relation(fields: [productVariantId], references: [id], onDelete: SetNull)
+  description      String
+  quantity         Decimal         @default(1) @db.Decimal(12, 2)
+  unitCost         Decimal         @default(0) @db.Decimal(14, 2)
+  quantityReceived Decimal         @default(0) @db.Decimal(12, 2)
+
+  goodsReceiptItems GoodsReceiptItem[]
+}
+
+model GoodsReceipt {
+  id              String   @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  warehouseId     String?
+  receivedAt      DateTime @default(now())
+  notes           String?
+  createdAt       DateTime @default(now())
+
+  items           GoodsReceiptItem[]
+}
+
+model GoodsReceiptItem {
+  id                  String            @id @default(cuid())
+  goodsReceiptId      String
+  goodsReceipt        GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderItemId String?
+  purchaseOrderItem   PurchaseOrderItem? @relation(fields: [purchaseOrderItemId], references: [id], onDelete: SetNull)
+  productId           String?
+  product             Product?          @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productVariantId    String?
+  productVariant      ProductVariant?   @relation(fields: [productVariantId], references: [id], onDelete: SetNull)
+  quantity            Decimal           @default(1) @db.Decimal(12, 2)
+}
+
+enum SupplierInvoiceStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  OVERDUE
+}
+
+model SupplierInvoice {
+  id              String                 @id @default(cuid())
+  number          String
+  supplierId      String?
+  supplier        Company?               @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  purchaseOrderId String?
+  purchaseOrder   PurchaseOrder?         @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  amount          Decimal                @db.Decimal(14, 2)
+  amountPaid      Decimal                @default(0) @db.Decimal(14, 2)
+  status          SupplierInvoiceStatus  @default(UNPAID)
+  issueDate       DateTime               @default(now())
+  dueDate         DateTime?
+  createdAt       DateTime               @default(now())
+
+  @@index([status])
+}
+
+// =============================================================================
+// Tasks / Calendar
+// =============================================================================
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Task {
+  id           String            @id @default(cuid())
+  title        String
+  description  String?
+  status       TaskStatus        @default(TODO)
+  priority     TaskPriority      @default(MEDIUM)
+  dueDate      DateTime?
+  assigneeId   String?
+  assignee     User?             @relation("TaskAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  createdById  String?
+  createdBy    User?             @relation("TaskCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  relatedType  RelatedEntityType?
+  relatedId    String?
+  autoGenerated Boolean          @default(false)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([status])
+  @@index([relatedType, relatedId])
+}
+
+model CalendarEvent {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  startsAt    DateTime
+  endsAt      DateTime
+  allDay      Boolean  @default(false)
+  relatedType RelatedEntityType?
+  relatedId   String?
+  createdById String?
+  createdBy   User?    @relation("EventCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+
+  @@index([startsAt])
+}
+
+// =============================================================================
+// Email inbox
+// =============================================================================
+
+model EmailAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label             String
+  emailAddress      String
+  imapHost          String
+  imapPort          Int      @default(993)
+  imapSecure        Boolean  @default(true)
+  smtpHost          String
+  smtpPort          Int      @default(587)
+  smtpSecure        Boolean  @default(false)
+  username          String
+  encryptedPassword String
+  active            Boolean  @default(true)
+  lastSyncedAt      DateTime?
+  createdAt         DateTime @default(now())
+
+  messages          EmailMessage[]
+}
+
+enum EmailDirection {
+  INBOUND
+  OUTBOUND
+}
+
+model EmailMessage {
+  id             String         @id @default(cuid())
+  emailAccountId String
+  emailAccount   EmailAccount   @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+  messageId      String
+  threadId       String?
+  direction      EmailDirection
+  fromAddress    String
+  toAddresses    String
+  ccAddresses    String?
+  subject        String?
+  bodyText       String?
+  bodyHtml       String?
+  companyId      String?
+  company        Company?       @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  contactId      String?
+  contact        Contact?       @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  isRead         Boolean        @default(false)
+  isAnswered     Boolean        @default(false)
+  receivedAt     DateTime       @default(now())
+  createdAt      DateTime       @default(now())
+
+  attachments    EmailAttachment[]
+
+  @@unique([emailAccountId, messageId])
+  @@index([threadId])
+  @@index([companyId])
+  @@index([contactId])
+}
+
+model EmailAttachment {
+  id             String       @id @default(cuid())
+  emailMessageId String
+  emailMessage   EmailMessage @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+  filename       String
+  storedPath     String
+  mimeType       String
+  size           Int
+}
+
+// =============================================================================
+// WhatsApp (Meta Cloud API)
+// =============================================================================
+
+model WhatsAppAccount {
+  id                    String   @id @default(cuid())
+  label                 String
+  phoneNumberId         String
+  businessAccountId     String
+  displayPhoneNumber    String?
+  encryptedAccessToken  String
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now())
+}
+
+enum WhatsAppDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum WhatsAppMessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+model WhatsAppMessage {
+  id           String                 @id @default(cuid())
+  waMessageId  String?                @unique
+  direction    WhatsAppDirection
+  fromNumber   String
+  toNumber     String
+  companyId    String?
+  company      Company?               @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  contactId    String?
+  contact      Contact?               @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  messageType  String                 @default("text")
+  body         String?
+  templateName String?
+  status       WhatsAppMessageStatus  @default(PENDING)
+  timestamp    DateTime               @default(now())
+
+  @@index([companyId])
+  @@index([contactId])
+}
+
+model WhatsAppTemplate {
+  id       String   @id @default(cuid())
+  name     String   @unique
+  language String   @default("en_US")
+  category String
+  status   String   @default("LOCAL")
+  bodyText String
+  createdAt DateTime @default(now())
+}
+
+// =============================================================================
+// Automation rules
+// =============================================================================
+
+enum AutomationTrigger {
+  EMAIL_RECEIVED_NO_REPLY
+  INVOICE_OVERDUE
+  ORDER_PENDING
+  LOW_STOCK
+  ORDER_STATUS_CHANGED
+  INVOICE_CREATED
+  SCHEDULE
+}
+
+model AutomationRule {
+  id          String            @id @default(cuid())
+  name        String
+  trigger     AutomationTrigger
+  conditions  Json?
+  actions     Json
+  active      Boolean           @default(true)
+  createdById String?
+  createdBy   User?             @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  logs        AutomationLog[]
+}
+
+model AutomationLog {
+  id          String         @id @default(cuid())
+  ruleId      String?
+  rule        AutomationRule? @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  entityType  String?
+  entityId    String?
+  success     Boolean        @default(true)
+  message     String?
+  createdAt   DateTime       @default(now())
+}
+
+// =============================================================================
+// WordPress integration
+// =============================================================================
+
+model WordPressSite {
+  id             String    @id @default(cuid())
+  name           String
+  baseUrl        String
+  syncEnabled    Boolean   @default(true)
+  lastSyncedAt   DateTime?
+  createdAt      DateTime  @default(now())
+
+  articles       KnowledgeBaseArticle[]
+  leads          WordPressLead[]
+}
+
+enum KnowledgeBaseArticleType {
+  PAGE
+  POST
+  FAQ
+  SERVICE
+  PRODUCT
+}
+
+model KnowledgeBaseArticle {
+  id              String                    @id @default(cuid())
+  wordpressSiteId String
+  wordpressSite   WordPressSite             @relation(fields: [wordpressSiteId], references: [id], onDelete: Cascade)
+  wpId            Int
+  type            KnowledgeBaseArticleType
+  title           String
+  slug            String
+  url             String
+  excerpt         String?
+  content         String?
+  wpModifiedAt    DateTime?
+  syncedAt        DateTime                  @default(now())
+
+  @@unique([wordpressSiteId, wpId, type])
+  @@index([title])
+}
+
+model WordPressLead {
+  id              String        @id @default(cuid())
+  wordpressSiteId String
+  wordpressSite   WordPressSite @relation(fields: [wordpressSiteId], references: [id], onDelete: Cascade)
+  formName        String?
+  sourceUrl       String?
+  submittedAt     DateTime      @default(now())
+  rawData         Json
+  consentGiven    Boolean       @default(false)
+  consentText     String?
+  companyId       String?
+  company         Company?      @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  contactId       String?
+  contact         Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  processed       Boolean       @default(false)
+  createdAt       DateTime      @default(now())
+
+  @@index([companyId])
+  @@index([contactId])
+}
