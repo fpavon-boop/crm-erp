@@ -27,7 +27,7 @@
     "imapflow": "^1.0.171",
     "lucide-react": "^0.446.0",
     "mailparser": "^3.7.1",
-    "next": "14.2.13",
+    "next": "14.2.35",
     "next-auth": "^4.24.8",
     "nodemailer": "^7.0.7",
     "pdfkit": "^0.15.0",
