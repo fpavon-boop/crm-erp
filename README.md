@@ -189,7 +189,10 @@ redirects will fail.
 ### 5.5 Automations scheduling
 
 Automations (overdue-invoice reminders, low-stock/pending-order/unanswered-email tasks, and
-email inbox sync) run when `POST /api/automations/run` is called. Two options:
+email inbox sync) run **automatically every 15 minutes inside the app process** (see
+`src/instrumentation.ts`) — no extra service needed. Tune with `AUTOMATIONS_INTERVAL_MINUTES`,
+or set `DISABLE_INTERNAL_SCHEDULER=true` if you prefer an external trigger. They also run when
+`POST /api/automations/run` is called. External options:
 
 - **Easypanel Cron** (if available on your plan): schedule a job that runs, e.g. every 15
   minutes:

@@ -5,6 +5,7 @@ const nextConfig = {
     ignoreDuringBuilds: true,
   },
   experimental: {
+    instrumentationHook: true,
     serverComponentsExternalPackages: ['pdfkit', 'imapflow', 'mailparser', 'nodemailer'],
   },
 };
