@@ -17,7 +17,7 @@ export default function AccountsClient({ initial }: { initial: Account[] }) {
   const router = useRouter();
   const [accounts, setAccounts] = useState(initial);
   const [form, setForm] = useState({
-    label: '', emailAddress: '', imapHost: '', imapPort: '993', smtpHost: '', smtpPort: '587', username: '', password: '',
+    label: '', emailAddress: '', imapHost: 'imap.hostinger.com', imapPort: '993', smtpHost: 'smtp.hostinger.com', smtpPort: '465', username: '', password: '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -36,7 +36,7 @@ export default function AccountsClient({ initial }: { initial: Account[] }) {
         imapPort: Number(form.imapPort),
         smtpPort: Number(form.smtpPort),
         imapSecure: true,
-        smtpSecure: false,
+        smtpSecure: Number(form.smtpPort) === 465,
       }),
     });
     setSaving(false);
