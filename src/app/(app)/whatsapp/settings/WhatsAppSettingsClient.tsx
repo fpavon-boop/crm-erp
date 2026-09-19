@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import NumberSetup from './NumberSetup';
 
 interface Account { id: string; label: string; phoneNumberId: string; businessAccountId: string; displayPhoneNumber: string | null }
 interface Template { id: string; name: string; language: string; category: string; bodyText: string }
@@ -45,6 +46,7 @@ export default function WhatsAppSettingsClient({ accounts, templates }: { accoun
 
   return (
     <div className="space-y-6">
+      {accounts.length > 0 && <NumberSetup />}
       <div className="card p-5">
         <h2 className="font-semibold text-slate-800 mb-1">Meta WhatsApp Business account</h2>
         <p className="text-xs text-slate-500 mb-3">
