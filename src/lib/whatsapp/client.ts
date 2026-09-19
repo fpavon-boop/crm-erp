@@ -112,8 +112,17 @@ export async function sendTemplate(params: SendTemplateParams) {
 
 /** Parses an inbound Meta webhook payload, stores messages, and links them to
  * a matching Contact by phone number. See /api/whatsapp/webhook route. */
-export async function handleInboundWebhook(payload: unknown) {
-  const entries = (payload as { entry?: unknown[] })?.entry || [];
+export async function handleInboundWebhook(rawPayload: unknown) {
+  // Accept Meta's raw shape ({entry:[{changes:[{value}]}]}) as well as the
+  // slimmer shape relays like n8n's WhatsApp Trigger emit ({messages, metadata}),
+  // either as a single object or an array of them.
+  const items = Array.isArray(rawPayload) ? rawPayload : [rawPayload];
+  const entries: unknown[] = [];
+  for (const item of items as Array<Record<string, unknown> | null>) {
+    if (!item) continue;
+    if (Array.isArray(item.entry)) entries.push(...(item.entry as unknown[]));
+    else if (Array.isArray(item.messages)) entries.push({ changes: [{ value: item }] });
+  }
   let stored = 0;
 
   for (const entry of entries as any[]) {
@@ -121,6 +130,7 @@ export async function handleInboundWebhook(payload: unknown) {
       const value = change.value;
       for (const msg of value?.messages || []) {
         const fromNumber = msg.from as string;
+        if (msg.id && (await prisma.whatsAppMessage.findUnique({ where: { waMessageId: msg.id } }))) continue;
         const contact = await prisma.contact.findFirst({
           where: { OR: [{ phone: { contains: fromNumber } }, { mobile: { contains: fromNumber } }] },
         });
