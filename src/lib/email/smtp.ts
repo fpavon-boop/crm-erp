@@ -1,4 +1,6 @@
 import nodemailer from 'nodemailer';
+import { prisma } from '@/lib/prisma';
+import { decryptSecret } from '@/lib/crypto';
 
 /** Default outbound transport, configured from env (SMTP_*). Used for system
  * notifications: invoice delivery, payment reminders, order confirmations. */
@@ -27,12 +29,27 @@ export async function sendSystemEmail(opts: {
   html: string;
   attachments?: { filename: string; content: Buffer }[];
 }): Promise<{ sent: boolean; reason?: string }> {
-  const transport = getSystemTransport();
+  let transport = getSystemTransport();
+  let from = process.env.SMTP_FROM || process.env.SMTP_USER;
+
   if (!transport) {
-    return { sent: false, reason: 'SMTP not configured (see .env SMTP_* variables)' };
+    // Fall back to the first connected mailbox so no separate SMTP_* setup is needed.
+    const account = await prisma.emailAccount.findFirst({ where: { active: true }, orderBy: { createdAt: 'asc' } });
+    if (!account) {
+      return { sent: false, reason: 'No SMTP configured and no connected mailbox (Email Inbox > Manage Accounts)' };
+    }
+    transport = getAccountTransport({
+      smtpHost: account.smtpHost,
+      smtpPort: account.smtpPort,
+      smtpSecure: account.smtpSecure,
+      username: account.username,
+      password: decryptSecret(account.encryptedPassword),
+    });
+    from = account.emailAddress;
   }
+
   await transport.sendMail({
-    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    from,
     to: opts.to,
     subject: opts.subject,
     html: opts.html,
