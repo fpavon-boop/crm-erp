@@ -24,7 +24,20 @@ interface WooOrder {
   status: string;
   total: string;
   currency: string;
-  billing: { email: string; first_name: string; last_name: string; company?: string };
+  date_created_gmt?: string;
+  billing: {
+    email: string;
+    first_name: string;
+    last_name: string;
+    company?: string;
+    phone?: string;
+    address_1?: string;
+    address_2?: string;
+    city?: string;
+    state?: string;
+    postcode?: string;
+    country?: string;
+  };
   line_items: Array<{ name: string; quantity: number; price: string; sku?: string }>;
 }
 
@@ -36,9 +49,58 @@ function authQuery(): string {
 }
 
 async function wooFetch<T>(baseUrl: string, endpoint: string): Promise<T[]> {
-  const res = await fetch(`${baseUrl}/wp-json/wc/v3/${endpoint}?per_page=100&${authQuery()}`);
-  if (!res.ok) throw new Error(`WooCommerce API error ${res.status} on ${endpoint}`);
-  return res.json();
+  const all: T[] = [];
+  for (let page = 1; page <= 50; page += 1) {
+    const res = await fetch(`${baseUrl}/wp-json/wc/v3/${endpoint}?per_page=100&page=${page}&${authQuery()}`);
+    if (!res.ok) throw new Error(`WooCommerce API error ${res.status} on ${endpoint}`);
+    const batch: T[] = await res.json();
+    all.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return all;
+}
+
+/** Finds or creates the Contact (and Company, when the billing details name
+ * one) for an order, so guest checkouts are linked to who actually bought. */
+async function resolveOrderCustomer(billing: WooOrder['billing']) {
+  const email = billing.email?.trim().toLowerCase();
+  if (!email) return { contactId: undefined, companyId: undefined };
+
+  let contact = await prisma.contact.findFirst({ where: { email: { equals: email, mode: 'insensitive' } } });
+  if (!contact) {
+    let companyId: string | undefined;
+    const companyName = billing.company?.trim();
+    if (companyName) {
+      const existing = await prisma.company.findFirst({ where: { name: { equals: companyName, mode: 'insensitive' } } });
+      const company =
+        existing ??
+        (await prisma.company.create({
+          data: {
+            name: companyName,
+            type: 'CUSTOMER',
+            addressLine1: billing.address_1 || null,
+            addressLine2: billing.address_2 || null,
+            city: billing.city || null,
+            state: billing.state || null,
+            postalCode: billing.postcode || null,
+            country: billing.country || null,
+          },
+        }));
+      companyId = company.id;
+    }
+    contact = await prisma.contact.create({
+      data: {
+        firstName: billing.first_name || 'Customer',
+        lastName: billing.last_name || '-',
+        email,
+        phone: billing.phone || null,
+        companyId,
+        externalSource: 'woocommerce',
+        externalId: `guest:${email}`,
+      },
+    });
+  }
+  return { contactId: contact.id, companyId: contact.companyId ?? undefined };
 }
 
 /** Syncs WooCommerce customers, products, and orders into the CRM/ERP models.
@@ -129,7 +191,12 @@ export async function syncWooCommerce(siteId: string): Promise<{
 
   const wooOrders = await wooFetch<WooOrder>(site.baseUrl, 'orders').catch(() => []);
   for (const o of wooOrders) {
-    const contact = await prisma.contact.findFirst({ where: { email: o.billing.email } });
+    const { contactId, companyId } = await resolveOrderCustomer(o.billing).catch(() => ({
+      contactId: undefined,
+      companyId: undefined,
+    }));
+    // Woo GMT timestamps carry no zone suffix; keep the real order date.
+    const createdAt = o.date_created_gmt ? new Date(`${o.date_created_gmt}Z`) : undefined;
     await prisma.salesOrder.upsert({
       where: { externalSource_externalId: { externalSource: 'woocommerce', externalId: String(o.id) } },
       create: {
@@ -137,8 +204,9 @@ export async function syncWooCommerce(siteId: string): Promise<{
         status: mapWooStatus(o.status),
         total: Number(o.total),
         subtotal: Number(o.total),
-        contactId: contact?.id,
-        companyId: contact?.companyId,
+        contactId,
+        companyId,
+        ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
         externalSource: 'woocommerce',
         externalId: String(o.id),
         items: {
@@ -152,6 +220,9 @@ export async function syncWooCommerce(siteId: string): Promise<{
       update: {
         status: mapWooStatus(o.status),
         total: Number(o.total),
+        contactId,
+        companyId,
+        ...(createdAt && !Number.isNaN(createdAt.getTime()) ? { createdAt } : {}),
       },
     }).catch(() => null);
     orders += 1;
