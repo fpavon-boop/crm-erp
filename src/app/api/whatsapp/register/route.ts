@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
       headers,
     });
   } else if (action === 'status') {
-    res = await fetch(`${base}?fields=display_phone_number,verified_name,code_verification_status,quality_rating,name_status,status,platform_type`, { headers });
+    res = await fetch(`${base}?fields=display_phone_number,verified_name,code_verification_status,quality_rating,name_status,status,platform_type,webhook_configuration`, { headers });
   } else if (action === 'request_code') {
     res = await fetch(`${base}/request_code`, {
       method: 'POST', headers, body: JSON.stringify({ code_method: method || 'SMS', language: 'en_US' }),
