@@ -21,6 +21,7 @@ import {
   Settings,
   Zap,
   ShieldCheck,
+  Wallet,
   type LucideIcon,
 } from 'lucide-react';
 import type { Module } from '@/lib/permissions';
@@ -42,6 +43,7 @@ const NAV: NavItem[] = [
   { href: '/sales/orders', label: 'Sales Orders', icon: FileText, module: 'sales' },
   { href: '/invoicing', label: 'Invoicing', icon: Receipt, module: 'invoicing' },
   { href: '/purchasing', label: 'Purchasing', icon: Truck, module: 'purchasing' },
+  { href: '/finance', label: 'Finance', icon: Wallet, module: 'finance' },
   { href: '/inventory', label: 'Inventory', icon: Boxes, module: 'inventory' },
   { href: '/tasks', label: 'Tasks', icon: CheckSquare, module: 'tasks' },
   { href: '/calendar', label: 'Calendar', icon: Calendar, module: 'calendar' },

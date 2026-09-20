@@ -673,7 +673,39 @@ model SupplierInvoice {
   dueDate         DateTime?
   createdAt       DateTime               @default(now())
 
+  payments        SupplierPayment[]
+
   @@index([status])
+}
+
+/// A payment made against a supplier bill (money out).
+model SupplierPayment {
+  id                String           @id @default(cuid())
+  supplierInvoiceId String
+  supplierInvoice   SupplierInvoice  @relation(fields: [supplierInvoiceId], references: [id], onDelete: Cascade)
+  amount            Decimal          @db.Decimal(14, 2)
+  method            String
+  reference         String?
+  paidAt            DateTime         @default(now())
+
+  @@index([paidAt])
+}
+
+/// Day-to-day company spending that is not a supplier bill (rent, fuel, tools, subscriptions...).
+model Expense {
+  id          String   @id @default(cuid())
+  expenseDate DateTime @default(now())
+  category    String
+  payee       String?
+  description String?
+  amount      Decimal  @db.Decimal(14, 2)
+  method      String   @default("Bank transfer")
+  reference   String?
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([expenseDate])
+  @@index([category])
 }
 
 // =============================================================================
