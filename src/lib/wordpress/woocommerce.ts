@@ -165,12 +165,16 @@ export async function syncWooCommerce(siteId: string): Promise<{
         name: p.name,
         description: p.description ? p.description.replace(/<[^>]+>/g, ' ') : null,
         price: Number(p.price || p.regular_price || 0),
+        // Woo only reports a quantity for products it manages stock for;
+        // the rest would otherwise show as permanently "low stock" here.
+        trackInventory: p.stock_quantity !== null,
         externalSource: 'woocommerce',
         externalId: String(p.id),
       },
       update: {
         name: p.name,
         price: Number(p.price || p.regular_price || 0),
+        trackInventory: p.stock_quantity !== null,
       },
     });
 
