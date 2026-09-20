@@ -691,6 +691,45 @@ model SupplierPayment {
   @@index([paidAt])
 }
 
+enum BillEntryStatus {
+  REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum BillEntryKind {
+  BILL // something owed to a supplier
+  EXPENSE // already paid (receipt, card charge, utility...)
+}
+
+/// A bill or receipt waiting to be checked. Approving it creates a real SupplierInvoice or Expense.
+model BillEntry {
+  id                String          @id @default(cuid())
+  status            BillEntryStatus @default(REVIEW)
+  kind              BillEntryKind   @default(BILL)
+  vendor            String?
+  invoiceNumber     String?
+  amount            Decimal?        @db.Decimal(14, 2)
+  billDate          DateTime?
+  dueDate           DateTime?
+  category          String?
+  paid              Boolean         @default(false)
+  paymentMethod     String?
+  notes             String?
+  fileName          String?
+  storedPath        String?
+  mimeType          String?
+  size              Int?
+  source            String          @default("UPLOAD")
+  supplierInvoiceId String?
+  expenseId         String?
+  uploadedById      String?
+  createdAt         DateTime        @default(now())
+
+  @@index([status])
+  @@index([createdAt])
+}
+
 /// Day-to-day company spending that is not a supplier bill (rent, fuel, tools, subscriptions...).
 model Expense {
   id          String   @id @default(cuid())

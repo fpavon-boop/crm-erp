@@ -60,7 +60,12 @@ export default async function FinancePage() {
       <PageHeader
         title="Finance"
         subtitle="Money in, money out, and what is still owed"
-        actions={<Link href="/finance/expenses" className="btn-primary">Expenses</Link>}
+        actions={
+          <div className="flex gap-2">
+            <Link href="/finance/bills" className="btn-primary">Bills</Link>
+            <Link href="/finance/expenses" className="btn-secondary">Expenses</Link>
+          </div>
+        }
       />
 
       <p className="text-sm text-slate-500 mb-3">This month ({current.label})</p>
