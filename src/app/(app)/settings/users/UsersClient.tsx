@@ -22,6 +22,11 @@ export default function UsersClient({ initial, currentUserId }: { initial: User[
   const [password, setPassword] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pwUserId, setPwUserId] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [pwSaving, setPwSaving] = useState(false);
+  const [pwMessage, setPwMessage] = useState<{ ok: boolean; text: string } | null>(null);
 
   async function createUser(e: React.FormEvent) {
     e.preventDefault();
@@ -65,6 +70,33 @@ export default function UsersClient({ initial, currentUserId }: { initial: User[
     });
   }
 
+  async function setUserPassword(e: React.FormEvent) {
+    e.preventDefault();
+    if (!pwUserId) return;
+    if (newPassword.length < 8) {
+      setPwMessage({ ok: false, text: 'Use at least 8 characters.' });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPwMessage({ ok: false, text: 'The two passwords do not match.' });
+      return;
+    }
+    setPwSaving(true);
+    const res = await fetch(`/api/users/${pwUserId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: newPassword }),
+    });
+    setPwSaving(false);
+    if (!res.ok) {
+      setPwMessage({ ok: false, text: 'Could not change the password.' });
+      return;
+    }
+    setPwMessage({ ok: true, text: 'Password changed. Use it the next time you sign in.' });
+    setNewPassword('');
+    setConfirmPassword('');
+  }
+
   async function remove(id: string) {
     if (!confirm('Delete this user?')) return;
     setUsers((u) => u.filter((usr) => usr.id !== id));
@@ -91,6 +123,18 @@ export default function UsersClient({ initial, currentUserId }: { initial: User[
         </form>
       )}
 
+      {pwUserId && (
+        <form onSubmit={setUserPassword} autoComplete="off" className="card p-5 mb-4 space-y-3 max-w-lg">
+          <p className="text-sm font-medium text-slate-800">
+            Set a new password for {users.find((usr) => usr.id === pwUserId)?.name}
+          </p>
+          {pwMessage && <p className={`text-sm ${pwMessage.ok ? 'text-green-600' : 'text-red-600'}`}>{pwMessage.text}</p>}
+          <input className="input" type="password" autoComplete="new-password" placeholder="New password (min 8 chars)" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+          <input className="input" type="password" autoComplete="new-password" placeholder="Repeat the new password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} />
+          <button type="submit" disabled={pwSaving} className="btn-primary">{pwSaving ? 'Saving...' : 'Save password'}</button>
+        </form>
+      )}
+
       <div className="card overflow-x-auto">
         <table className="table-base">
           <thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th /></tr></thead>
@@ -112,7 +156,18 @@ export default function UsersClient({ initial, currentUserId }: { initial: User[
                     <Badge label={u.active ? 'active' : 'inactive'} />
                   </button>
                 </td>
-                <td>
+                <td className="space-x-3 whitespace-nowrap">
+                  <button
+                    className="text-blue-600 hover:text-blue-800 text-xs"
+                    onClick={() => {
+                      setPwUserId(pwUserId === u.id ? null : u.id);
+                      setPwMessage(null);
+                      setNewPassword('');
+                      setConfirmPassword('');
+                    }}
+                  >
+                    Set password
+                  </button>
                   {u.id !== currentUserId && (
                     <button className="text-red-500 hover:text-red-700 text-xs" onClick={() => remove(u.id)}>Delete</button>
                   )}
