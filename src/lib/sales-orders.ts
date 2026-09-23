@@ -1,7 +1,32 @@
 import { prisma } from '@/lib/prisma';
-import type { Invoice, InvoiceItem, SalesOrder, SalesOrderStatus } from '@prisma/client';
-import { applySalesOrderInventoryEffect } from '@/lib/automations/stock';
+import type { Prisma, Invoice, InvoiceItem, SalesOrder, SalesOrderStatus } from '@prisma/client';
+import {
+  applySalesOrderInventoryEffect,
+  applySalesOrderLineMovements,
+  extractTrackedLines,
+  hasDeductedStock,
+  STOCK_HOLDING_STATUSES,
+  type TrackedOrderLine,
+} from '@/lib/automations/stock';
 import { generateNumber } from '@/lib/numbering';
+
+const orderItemsInclude = {
+  items: { include: { productVariant: { include: { product: true } } } },
+} satisfies Prisma.SalesOrderInclude;
+
+function linesEqual(a: TrackedOrderLine[], b: TrackedOrderLine[]): boolean {
+  const normalize = (lines: TrackedOrderLine[]) => {
+    const totals = new Map<string, number>();
+    for (const line of lines) {
+      totals.set(line.productVariantId, (totals.get(line.productVariantId) ?? 0) + line.quantity);
+    }
+    return [...totals.entries()].sort(([a], [b]) => a.localeCompare(b));
+  };
+  const na = normalize(a);
+  const nb = normalize(b);
+  if (na.length !== nb.length) return false;
+  return na.every(([variantId, qty], i) => nb[i][0] === variantId && nb[i][1] === qty);
+}
 
 /** Thrown when a status change loses a race: another request already moved
  * the order away from the status we last read. The caller should surface
@@ -69,6 +94,140 @@ export async function transitionSalesOrderStatus(
 
     const order = await tx.salesOrder.findUniqueOrThrow({ where: { id: orderId } });
     return { order, previousStatus: current.status, changed: true };
+  });
+}
+
+export interface SalesOrderItemInput {
+  productId?: string | null;
+  productVariantId?: string | null;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  taxRate: number;
+  discount: number;
+}
+
+export interface SalesOrderWriteInput {
+  companyId?: string | null;
+  contactId?: string | null;
+  quoteId?: string | null;
+  status: SalesOrderStatus;
+  notes?: string | null;
+  items: SalesOrderItemInput[];
+}
+
+export interface SalesOrderTotals {
+  subtotal: number;
+  taxTotal: number;
+  discountTotal: number;
+  total: number;
+}
+
+/**
+ * Creates a new sales order and, if it's created directly in a
+ * stock-holding status (CONFIRMED, SHIPPED, or — unusually — DELIVERED,
+ * rather than the normal DRAFT default), deducts inventory for it in the
+ * same transaction. Without this, a sales order created with a non-DRAFT
+ * initial status (the create form's status field allows this) would never
+ * have its inventory effect applied at all, since creation never went
+ * through transitionSalesOrderStatus. See docs/INVENTORY_RULES.md.
+ */
+export async function createSalesOrderWithInventoryEffect(
+  input: SalesOrderWriteInput,
+  totals: SalesOrderTotals,
+  number: string
+): Promise<SalesOrder> {
+  return prisma.$transaction(async (tx) => {
+    const { items, ...rest } = input;
+    const order = await tx.salesOrder.create({
+      data: { ...rest, number, ...totals, items: { create: items } },
+    });
+
+    if (STOCK_HOLDING_STATUSES.has(order.status)) {
+      const created = await tx.salesOrder.findUniqueOrThrow({
+        where: { id: order.id },
+        include: orderItemsInclude,
+      });
+      const lines = extractTrackedLines(created.items);
+      await applySalesOrderLineMovements(lines, 'OUT', {
+        salesOrderId: order.id,
+        reason: `Sales order ${order.number} created directly as ${order.status.toLowerCase()}`,
+        db: tx,
+      });
+    }
+
+    return order;
+  });
+}
+
+/**
+ * Updates a sales order's fields/items/status and reconciles inventory so
+ * the StockMovement ledger always matches what the order currently says —
+ * closing the gap where editing a CONFIRMED/SHIPPED order's quantities (or
+ * changing its status via this same route, which the edit form allows)
+ * left stock history permanently out of sync with the order (SYSTEM_AUDIT.md
+ * D2).
+ *
+ * Concurrency: a Postgres advisory transaction lock keyed by the order id
+ * (the same pattern used by createInvoiceForSalesOrder) serializes
+ * concurrent edits/transitions for the *same* order, so two racing
+ * requests can't both read the "before" snapshot before either has
+ * written — the second waits, then reconciles against the first's result.
+ *
+ * Reconciliation rule: if the order currently holds a net stock deduction
+ * (hasDeductedStock) and either the tracked item lines or the status are
+ * changing, first reverse exactly the previous lines (an IN for each), then
+ * — if the order's new status is stock-holding (CONFIRMED/SHIPPED/DELIVERED)
+ * — deduct the new lines (an OUT for each). If nothing that affects
+ * inventory actually changed, no movement is created at all, so resending
+ * an identical edit is a no-op. See docs/INVENTORY_RULES.md.
+ */
+export async function updateSalesOrderWithInventoryReconciliation(
+  orderId: string,
+  input: SalesOrderWriteInput,
+  totals: SalesOrderTotals
+): Promise<SalesOrder> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${orderId}))`;
+
+    const before = await tx.salesOrder.findUnique({ where: { id: orderId }, include: orderItemsInclude });
+    if (!before) throw new SalesOrderNotFoundError(orderId);
+
+    const oldLines = extractTrackedLines(before.items);
+    const wasDeducted = await hasDeductedStock(orderId, tx);
+
+    const { items, ...rest } = input;
+    const updated = await tx.salesOrder.update({
+      where: { id: orderId },
+      data: { ...rest, ...totals, items: { deleteMany: {}, create: items } },
+      include: orderItemsInclude,
+    });
+    const newLines = extractTrackedLines(updated.items);
+
+    const itemsChanged = !linesEqual(oldLines, newLines);
+    const statusChanged = before.status !== updated.status;
+
+    if (wasDeducted && (itemsChanged || statusChanged)) {
+      await applySalesOrderLineMovements(oldLines, 'IN', {
+        salesOrderId: orderId,
+        reason: `Sales order ${updated.number} edited - stock reversed for update`,
+        db: tx,
+      });
+    }
+
+    if (STOCK_HOLDING_STATUSES.has(updated.status)) {
+      if (!(await hasDeductedStock(orderId, tx))) {
+        await applySalesOrderLineMovements(newLines, 'OUT', {
+          salesOrderId: orderId,
+          reason: `Sales order ${updated.number} edited - stock applied for updated quantities`,
+          db: tx,
+        });
+      }
+    } else if (updated.status === 'CANCELLED') {
+      await applySalesOrderInventoryEffect(orderId, 'CANCELLED', tx);
+    }
+
+    return updated;
   });
 }
 

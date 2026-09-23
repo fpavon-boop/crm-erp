@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { requireApiModule } from '@/lib/api-auth';
 import { salesOrderSchema } from '@/lib/validation';
 import { computeTotals } from '@/lib/totals';
+import { updateSalesOrderWithInventoryReconciliation, SalesOrderNotFoundError } from '@/lib/sales-orders';
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
   const session = await requireApiModule('sales');
@@ -27,9 +28,17 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   const { items, ...rest } = parsed.data;
   const totals = computeTotals(items);
 
-  const order = await prisma.salesOrder.update({
-    where: { id: params.id },
-    data: { ...rest, ...totals, items: { deleteMany: {}, create: items } },
+  let updated;
+  try {
+    updated = await updateSalesOrderWithInventoryReconciliation(params.id, { ...rest, items }, totals);
+  } catch (err) {
+    if (err instanceof SalesOrderNotFoundError) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+    throw err;
+  }
+  const order = await prisma.salesOrder.findUniqueOrThrow({
+    where: { id: updated.id },
     include: { items: true },
   });
 

@@ -7,6 +7,7 @@ import { generateNumber } from '@/lib/numbering';
 import { logAudit } from '@/lib/audit';
 import { csvResponse } from '@/lib/csv';
 import { money } from '@/lib/format';
+import { createSalesOrderWithInventoryEffect } from '@/lib/sales-orders';
 
 export async function GET(req: NextRequest) {
   const session = await requireApiModule('sales');
@@ -43,8 +44,9 @@ export async function POST(req: NextRequest) {
   const totals = computeTotals(items);
   const number = await generateNumber('salesOrder');
 
-  const order = await prisma.salesOrder.create({
-    data: { ...rest, number, ...totals, items: { create: items } },
+  const created = await createSalesOrderWithInventoryEffect({ ...rest, items }, totals, number);
+  const order = await prisma.salesOrder.findUniqueOrThrow({
+    where: { id: created.id },
     include: { items: true },
   });
 

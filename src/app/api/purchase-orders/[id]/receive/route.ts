@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import { requireApiModule } from '@/lib/api-auth';
-import { applyGoodsReceiptInventoryEffect } from '@/lib/automations/stock';
+import {
+  receiveGoodsForPurchaseOrder,
+  PurchaseOrderNotFoundError,
+  OverReceiptError,
+} from '@/lib/purchase-orders';
 import { logAudit } from '@/lib/audit';
 import { z } from 'zod';
 
@@ -27,35 +30,25 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const parsed = schema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
-  const purchaseOrder = await prisma.purchaseOrder.findUniqueOrThrow({
-    where: { id: params.id },
-    include: { items: true },
-  });
-
-  const receipt = await prisma.goodsReceipt.create({
-    data: {
-      purchaseOrderId: purchaseOrder.id,
-      warehouseId: parsed.data.warehouseId,
-      items: { create: parsed.data.items },
-    },
-    include: { items: true },
-  });
-
-  await applyGoodsReceiptInventoryEffect(receipt.id);
-
-  const updatedItems = await prisma.purchaseOrderItem.findMany({ where: { purchaseOrderId: purchaseOrder.id } });
-  const fullyReceived = updatedItems.every((i) => Number(i.quantityReceived) >= Number(i.quantity));
-  const anyReceived = updatedItems.some((i) => Number(i.quantityReceived) > 0);
-
-  const status = fullyReceived ? 'RECEIVED' : anyReceived ? 'PARTIALLY_RECEIVED' : purchaseOrder.status;
-  await prisma.purchaseOrder.update({ where: { id: purchaseOrder.id }, data: { status } });
+  let result;
+  try {
+    result = await receiveGoodsForPurchaseOrder(params.id, parsed.data.warehouseId, parsed.data.items);
+  } catch (err) {
+    if (err instanceof PurchaseOrderNotFoundError) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
+    if (err instanceof OverReceiptError) {
+      return NextResponse.json({ error: err.message, violations: err.violations }, { status: 400 });
+    }
+    throw err;
+  }
 
   await logAudit({
     userId: session.user.id,
     action: 'GOODS_RECEIVED',
     entityType: 'PurchaseOrder',
-    entityId: purchaseOrder.id,
+    entityId: params.id,
   });
 
-  return NextResponse.json({ receipt, status }, { status: 201 });
+  return NextResponse.json({ receipt: result.receipt, status: result.status }, { status: 201 });
 }
