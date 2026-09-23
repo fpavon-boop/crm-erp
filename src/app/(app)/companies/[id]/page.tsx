@@ -1,44 +1,32 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { prisma } from '@/lib/prisma';
+import type { Role } from '@prisma/client';
 import { requireModule } from '@/lib/session';
+import { getCustomer360, CompanyNotFoundError } from '@/lib/customer-360';
 import PageHeader from '@/components/PageHeader';
 import Badge from '@/components/Badge';
 import { money, formatDate, formatDateTime } from '@/lib/format';
 import { AddNoteForm, UploadDocumentForm, DeleteCompanyButton } from './CompanyDetailClient';
 import { Pencil, Download } from 'lucide-react';
 
+/**
+ * The Customer 360 view for one company. All data comes from
+ * getCustomer360() (src/lib/customer-360.ts), which already restricts
+ * which sections are fetched based on the viewer's role — this page only
+ * decides how to *render* what it was given. See docs/CUSTOMER_360.md.
+ */
 export default async function CompanyDetailPage({ params }: { params: { id: string } }) {
-  await requireModule('companies');
+  const session = await requireModule('companies');
+  const role = session.user.role as Role;
 
-  const company = await prisma.company.findUnique({
-    where: { id: params.id },
-    include: {
-      phones: true,
-      emails: true,
-      contacts: true,
-      owner: true,
-      invoices: { orderBy: { createdAt: 'desc' }, take: 20 },
-      salesOrders: { orderBy: { createdAt: 'desc' }, take: 20 },
-      quotes: { orderBy: { createdAt: 'desc' }, take: 20 },
-      purchaseOrders: { orderBy: { createdAt: 'desc' }, take: 20 },
-      documents: { orderBy: { createdAt: 'desc' } },
-      notesList: { orderBy: { createdAt: 'desc' }, include: { author: true } },
-      communicationLogs: { orderBy: { occurredAt: 'desc' }, take: 30 },
-      emailMessages: { orderBy: { receivedAt: 'desc' }, take: 10 },
-      whatsappMessages: { orderBy: { timestamp: 'desc' }, take: 10 },
-    },
-  });
-  if (!company) notFound();
-
-  const unpaidInvoices = await prisma.invoice.findMany({
-    where: { companyId: company.id, status: { in: ['SENT', 'PARTIAL', 'OVERDUE'] } },
-    select: { total: true, amountPaid: true },
-  });
-  const accountBalance = unpaidInvoices.reduce(
-    (sum, inv) => sum + (Number(inv.total) - Number(inv.amountPaid)),
-    0
-  );
+  let data;
+  try {
+    data = await getCustomer360(params.id, role);
+  } catch (err) {
+    if (err instanceof CompanyNotFoundError) notFound();
+    throw err;
+  }
+  const { company, sections, sales, invoicing, purchasing, tasks, whatsapp, inbox, activity } = data;
 
   return (
     <div>
@@ -61,6 +49,10 @@ export default async function CompanyDetailPage({ params }: { params: { id: stri
             <h2 className="font-semibold text-slate-800 mb-3">Profile</h2>
             <dl className="text-sm space-y-2">
               <Row label="Type"><Badge label={company.type} /></Row>
+              <Row label="Status">
+                <Badge label={activity.status} />
+              </Row>
+              <Row label="Last activity">{formatDate(activity.lastActivityAt)}</Row>
               <Row label="Tax ID">{company.taxId || '—'}</Row>
               <Row label="Industry">{company.industry || '—'}</Row>
               <Row label="Website">{company.website || '—'}</Row>
@@ -95,13 +87,26 @@ export default async function CompanyDetailPage({ params }: { params: { id: stri
             </div>
           </div>
 
-          <div className="card p-5">
-            <h2 className="font-semibold text-slate-800 mb-1">Account balance</h2>
-            <p className={`text-2xl font-bold ${accountBalance > 0 ? 'text-red-600' : 'text-green-600'}`}>
-              {money(accountBalance)}
-            </p>
-            <p className="text-xs text-slate-500 mt-1">Sum of unpaid & overdue invoices</p>
-          </div>
+          {invoicing ? (
+            <div className="card p-5">
+              <h2 className="font-semibold text-slate-800 mb-1">Financial summary</h2>
+              <dl className="text-sm space-y-2 mt-3">
+                <Row label="Total sales">{money(invoicing.financialSummary.totalSales)}</Row>
+                <Row label="Total paid">{money(invoicing.financialSummary.totalPaid)}</Row>
+                <Row label="Outstanding balance">
+                  <span className={invoicing.financialSummary.totalOutstanding > 0 ? 'text-red-600 font-semibold' : 'text-green-600 font-semibold'}>
+                    {money(invoicing.financialSummary.totalOutstanding)}
+                  </span>
+                </Row>
+                <Row label="Invoices">{invoicing.financialSummary.invoiceCount}</Row>
+              </dl>
+              <p className="text-xs text-slate-500 mt-2">
+                Sales/paid/outstanding are computed from each invoice's own recorded total and amount paid — never re-derived from line items.
+              </p>
+            </div>
+          ) : (
+            <SectionUnavailableCard title="Financial summary" />
+          )}
 
           <div className="card p-5">
             <h2 className="font-semibold text-slate-800 mb-3">Contacts ({company.contacts.length})</h2>
@@ -167,64 +172,214 @@ export default async function CompanyDetailPage({ params }: { params: { id: stri
             </ul>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="card p-5">
-              <h2 className="font-semibold text-slate-800 mb-3">Invoices</h2>
-              <RecordList
-                items={company.invoices.map((i) => ({
-                  id: i.id,
-                  href: `/invoicing/${i.id}`,
-                  label: i.number,
-                  status: i.status,
-                  amount: money(i.total),
-                  date: formatDate(i.issueDate),
-                }))}
-                emptyLabel="No invoices yet."
-              />
+          {(inbox || whatsapp) && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {inbox ? (
+                <div className="card p-5">
+                  <h2 className="font-semibold text-slate-800 mb-3">Recent emails</h2>
+                  <ul className="text-sm divide-y divide-slate-100 max-h-64 overflow-y-auto">
+                    {inbox.messages.map((m) => (
+                      <li key={m.id} className="py-2">
+                        <p className="font-medium truncate">{m.subject || '(no subject)'}</p>
+                        <p className="text-xs text-slate-400">{formatDateTime(m.receivedAt)}</p>
+                      </li>
+                    ))}
+                    {inbox.messages.length === 0 && <p className="text-slate-400">No emails yet.</p>}
+                  </ul>
+                </div>
+              ) : (
+                <SectionUnavailableCard title="Recent emails" />
+              )}
+              {whatsapp ? (
+                <div className="card p-5">
+                  <h2 className="font-semibold text-slate-800 mb-3">WhatsApp messages</h2>
+                  <ul className="text-sm divide-y divide-slate-100 max-h-64 overflow-y-auto">
+                    {whatsapp.messages.map((m) => (
+                      <li key={m.id} className="py-2">
+                        <p className="text-slate-700 line-clamp-2">{m.body || `(${m.messageType})`}</p>
+                        <p className="text-xs text-slate-400">{m.direction} · {formatDateTime(m.timestamp)}</p>
+                      </li>
+                    ))}
+                    {whatsapp.messages.length === 0 && <p className="text-slate-400">No WhatsApp messages yet.</p>}
+                  </ul>
+                </div>
+              ) : (
+                <SectionUnavailableCard title="WhatsApp messages" />
+              )}
             </div>
+          )}
+
+          {sales ? (
             <div className="card p-5">
-              <h2 className="font-semibold text-slate-800 mb-3">Sales orders</h2>
+              <h2 className="font-semibold text-slate-800 mb-3">Products purchased</h2>
+              {sales.topProducts.length === 0 ? (
+                <p className="text-slate-400 text-sm">No purchase history yet.</p>
+              ) : (
+                <ul className="text-sm divide-y divide-slate-100">
+                  {sales.topProducts.map((p) => (
+                    <li key={p.productId} className="py-2 flex items-center justify-between">
+                      <div>
+                        <Link href={`/inventory/${p.productId}`} className="text-brand-700 hover:underline">{p.name}</Link>
+                        <span className="text-slate-400"> · {p.sku}</span>
+                      </div>
+                      <div className="text-right">
+                        <div>{money(p.totalSpent)}</div>
+                        <div className="text-xs text-slate-400">{p.totalQuantity} units</div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          ) : (
+            <SectionUnavailableCard title="Products purchased" />
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {invoicing ? (
+              <div className="card p-5">
+                <h2 className="font-semibold text-slate-800 mb-3">Invoices</h2>
+                <RecordList
+                  items={invoicing.invoices.map((i) => ({
+                    id: i.id,
+                    href: `/invoicing/${i.id}`,
+                    label: i.number,
+                    status: i.status,
+                    amount: money(i.total),
+                    date: formatDate(i.issueDate),
+                  }))}
+                  emptyLabel="No invoices yet."
+                />
+              </div>
+            ) : (
+              <SectionUnavailableCard title="Invoices" />
+            )}
+            {sales ? (
+              <div className="card p-5">
+                <h2 className="font-semibold text-slate-800 mb-3">Sales orders</h2>
+                <RecordList
+                  items={sales.salesOrders.map((o) => ({
+                    id: o.id,
+                    href: `/sales/orders/${o.id}`,
+                    label: o.number,
+                    status: o.status,
+                    amount: money(o.total),
+                    date: formatDate(o.createdAt),
+                  }))}
+                  emptyLabel="No orders yet."
+                />
+              </div>
+            ) : (
+              <SectionUnavailableCard title="Sales orders" />
+            )}
+            {sales ? (
+              <div className="card p-5">
+                <h2 className="font-semibold text-slate-800 mb-3">Quotes</h2>
+                <RecordList
+                  items={sales.quotes.map((q) => ({
+                    id: q.id,
+                    href: `/sales/quotes/${q.id}`,
+                    label: q.number,
+                    status: q.status,
+                    amount: money(q.total),
+                    date: formatDate(q.createdAt),
+                  }))}
+                  emptyLabel="No quotes yet."
+                />
+              </div>
+            ) : (
+              <SectionUnavailableCard title="Quotes" />
+            )}
+            {purchasing ? (
+              <div className="card p-5">
+                <h2 className="font-semibold text-slate-800 mb-3">Purchase orders</h2>
+                <RecordList
+                  items={purchasing.purchaseOrders.map((p) => ({
+                    id: p.id,
+                    href: `/purchasing/orders/${p.id}`,
+                    label: p.number,
+                    status: p.status,
+                    amount: money(p.total),
+                    date: formatDate(p.createdAt),
+                  }))}
+                  emptyLabel="No purchase orders yet."
+                />
+              </div>
+            ) : (
+              <SectionUnavailableCard title="Purchase orders" />
+            )}
+          </div>
+
+          {sales ? (
+            <div className="card p-5">
+              <h2 className="font-semibold text-slate-800 mb-3">Opportunities</h2>
               <RecordList
-                items={company.salesOrders.map((o) => ({
+                items={sales.opportunities.map((o) => ({
                   id: o.id,
-                  href: `/sales/orders/${o.id}`,
-                  label: o.number,
-                  status: o.status,
-                  amount: money(o.total),
+                  href: `/sales/pipeline`,
+                  label: o.title,
+                  status: o.stage,
+                  amount: money(o.value),
                   date: formatDate(o.createdAt),
                 }))}
-                emptyLabel="No orders yet."
+                emptyLabel="No opportunities yet."
               />
             </div>
+          ) : (
+            <SectionUnavailableCard title="Opportunities" />
+          )}
+
+          {invoicing ? (
             <div className="card p-5">
-              <h2 className="font-semibold text-slate-800 mb-3">Quotes</h2>
-              <RecordList
-                items={company.quotes.map((q) => ({
-                  id: q.id,
-                  href: `/sales/quotes/${q.id}`,
-                  label: q.number,
-                  status: q.status,
-                  amount: money(q.total),
-                  date: formatDate(q.createdAt),
-                }))}
-                emptyLabel="No quotes yet."
-              />
+              <h2 className="font-semibold text-slate-800 mb-3">Payments</h2>
+              {invoicing.payments.length === 0 ? (
+                <p className="text-slate-400 text-sm">No payments recorded yet.</p>
+              ) : (
+                <ul className="text-sm divide-y divide-slate-100">
+                  {invoicing.payments.map((p) => (
+                    <li key={p.id} className="py-2 flex items-center justify-between">
+                      <div>
+                        <span className="text-slate-700">{p.invoiceNumber}</span>
+                        <span className="text-slate-400"> · {p.method}</span>
+                      </div>
+                      <div className="text-right">
+                        <div>{money(p.amount)}</div>
+                        <div className="text-xs text-slate-400">{formatDate(p.paidAt)}</div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
+          ) : (
+            <SectionUnavailableCard title="Payments" />
+          )}
+
+          {tasks ? (
             <div className="card p-5">
-              <h2 className="font-semibold text-slate-800 mb-3">Purchase orders</h2>
-              <RecordList
-                items={company.purchaseOrders.map((p) => ({
-                  id: p.id,
-                  href: `/purchasing/orders/${p.id}`,
-                  label: p.number,
-                  status: p.status,
-                  amount: money(p.total),
-                  date: formatDate(p.createdAt),
-                }))}
-                emptyLabel="No purchase orders yet."
-              />
+              <h2 className="font-semibold text-slate-800 mb-3">Tasks</h2>
+              {tasks.tasks.length === 0 ? (
+                <p className="text-slate-400 text-sm">No tasks linked to this company yet.</p>
+              ) : (
+                <ul className="text-sm divide-y divide-slate-100">
+                  {tasks.tasks.map((t) => (
+                    <li key={t.id} className="py-2 flex items-center justify-between">
+                      <div>
+                        <Link href="/tasks" className="text-brand-700 hover:underline">{t.title}</Link>
+                        {t.dueDate && <span className="text-xs text-slate-400"> · due {formatDate(t.dueDate)}</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge label={t.priority} />
+                        <Badge label={t.status} />
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
-          </div>
+          ) : (
+            <SectionUnavailableCard title="Tasks" />
+          )}
         </div>
       </div>
     </div>
@@ -236,6 +391,18 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
     <div className="flex justify-between gap-4">
       <dt className="text-slate-500">{label}</dt>
       <dd className="text-slate-800 text-right">{children}</dd>
+    </div>
+  );
+}
+
+/** Shown in place of a section the viewer's role isn't permitted to see
+ * (see getCustomer360Sections in src/lib/customer-360.ts), so the layout
+ * stays predictable rather than sections silently vanishing. */
+function SectionUnavailableCard({ title }: { title: string }) {
+  return (
+    <div className="card p-5">
+      <h2 className="font-semibold text-slate-800 mb-1">{title}</h2>
+      <p className="text-sm text-slate-400">Your role doesn&apos;t have access to this information.</p>
     </div>
   );
 }
