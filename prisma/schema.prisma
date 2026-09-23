@@ -94,6 +94,9 @@ model Company {
   externalSource String?
   externalId     String?
 
+  // Stripe integration (Phase 4)
+  stripeCustomerId String? @unique
+
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
@@ -583,6 +586,26 @@ model Payment {
   method    String
   reference String?
   paidAt    DateTime @default(now())
+
+  // Stripe integration (Phase 4) — all nullable; only set for
+  // Stripe-originated payments. refundedAmount tracks how much of THIS
+  // payment has been refunded (0 = none, == amount = fully refunded).
+  stripePaymentIntentId String? @unique
+  stripeChargeId        String?
+  refundedAmount        Decimal @default(0) @db.Decimal(14, 2)
+}
+
+// Records every Stripe webhook event this app has successfully processed,
+// keyed by Stripe's own event id — the idempotency guard that makes
+// webhook processing safe against Stripe's at-least-once delivery (retries
+// of the same event must never create a duplicate Payment or double-adjust
+// an Invoice). See docs/STRIPE_INTEGRATION.md.
+model StripeWebhookEvent {
+  id            String   @id @default(cuid())
+  stripeEventId String   @unique
+  type          String
+  processedAt   DateTime @default(now())
+  payload       Json?
 }
 
 // =============================================================================
