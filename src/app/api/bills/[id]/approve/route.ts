@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireApiModule } from '@/lib/api-auth';
 import { logAudit } from '@/lib/audit';
+import { createSupplierInvoiceSafely, DuplicateSupplierInvoiceNumberError } from '@/lib/supplier-invoices';
 
 /** Turns a checked entry into a real supplier bill (and payment) or a paid expense. */
 export async function POST(_req: NextRequest, { params }: { params: { id: string } }) {
@@ -58,8 +59,9 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
   }
 
   const number = entry.invoiceNumber?.trim() || `BILL-${entry.id.slice(-6).toUpperCase()}`;
-  const bill = await prisma.supplierInvoice.create({
-    data: {
+  let bill;
+  try {
+    bill = await createSupplierInvoiceSafely({
       number,
       supplierId: supplier.id,
       amount,
@@ -67,8 +69,16 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
       status: entry.paid ? 'PAID' : 'UNPAID',
       issueDate: billDate,
       dueDate: entry.dueDate,
-    },
-  });
+    });
+  } catch (err) {
+    if (err instanceof DuplicateSupplierInvoiceNumberError) {
+      return NextResponse.json(
+        { error: `${err.message} Check the invoice number on this entry (it may already be recorded), then try again.` },
+        { status: 409 }
+      );
+    }
+    throw err;
+  }
   if (entry.paid) {
     await prisma.supplierPayment.create({
       data: {

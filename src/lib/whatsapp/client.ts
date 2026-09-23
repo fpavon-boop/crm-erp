@@ -111,8 +111,18 @@ export async function sendTemplate(params: SendTemplateParams) {
 }
 
 /** Parses an inbound Meta webhook payload, stores messages, and links them to
- * a matching Contact by phone number. See /api/whatsapp/webhook route. */
-export async function handleInboundWebhook(rawPayload: unknown) {
+ * a matching Contact by phone number. See /api/whatsapp/webhook route.
+ *
+ * Each message is processed independently: if one message fails (bad data,
+ * a transient DB error), that failure is recorded in AutomationLog — where
+ * it's actually visible, instead of only ever reaching a container's
+ * stdout — and processing continues with the remaining messages in the
+ * batch, rather than one bad message silently blocking everything after it.
+ * A failure that happens before any per-message processing even starts
+ * (e.g. a payload shaped nothing like what Meta or n8n send) still
+ * propagates to the caller, so the webhook route can return a non-200 and
+ * let Meta retry delivery. */
+export async function handleInboundWebhook(rawPayload: unknown): Promise<{ stored: number; failed: number }> {
   // Accept Meta's raw shape ({entry:[{changes:[{value}]}]}) as well as the
   // slimmer shape relays like n8n's WhatsApp Trigger emit ({messages, metadata}),
   // either as a single object or an array of them.
@@ -124,46 +134,61 @@ export async function handleInboundWebhook(rawPayload: unknown) {
     else if (Array.isArray(item.messages)) entries.push({ changes: [{ value: item }] });
   }
   let stored = 0;
+  let failed = 0;
 
   for (const entry of entries as any[]) {
     for (const change of entry.changes || []) {
       const value = change.value;
       for (const msg of value?.messages || []) {
-        const fromNumber = msg.from as string;
-        if (msg.id && (await prisma.whatsAppMessage.findUnique({ where: { waMessageId: msg.id } }))) continue;
-        const contact = await prisma.contact.findFirst({
-          where: { OR: [{ phone: { contains: fromNumber } }, { mobile: { contains: fromNumber } }] },
-        });
+        try {
+          const fromNumber = msg.from as string;
+          if (msg.id && (await prisma.whatsAppMessage.findUnique({ where: { waMessageId: msg.id } }))) continue;
+          const contact = await prisma.contact.findFirst({
+            where: { OR: [{ phone: { contains: fromNumber } }, { mobile: { contains: fromNumber } }] },
+          });
 
-        await prisma.whatsAppMessage.create({
-          data: {
-            waMessageId: msg.id,
-            direction: 'INBOUND',
-            fromNumber,
-            toNumber: value?.metadata?.display_phone_number || '',
-            messageType: msg.type || 'text',
-            body: msg.text?.body || msg.button?.text || null,
-            status: 'DELIVERED',
-            contactId: contact?.id,
-            companyId: contact?.companyId,
-          },
-        });
-        stored += 1;
-
-        if (contact) {
-          await prisma.communicationLog.create({
+          await prisma.whatsAppMessage.create({
             data: {
-              type: 'WHATSAPP',
+              waMessageId: msg.id,
               direction: 'INBOUND',
-              body: msg.text?.body,
-              contactId: contact.id,
-              companyId: contact.companyId,
+              fromNumber,
+              toNumber: value?.metadata?.display_phone_number || '',
+              messageType: msg.type || 'text',
+              body: msg.text?.body || msg.button?.text || null,
+              status: 'DELIVERED',
+              contactId: contact?.id,
+              companyId: contact?.companyId,
             },
           });
+          stored += 1;
+
+          if (contact) {
+            await prisma.communicationLog.create({
+              data: {
+                type: 'WHATSAPP',
+                direction: 'INBOUND',
+                body: msg.text?.body,
+                contactId: contact.id,
+                companyId: contact.companyId,
+              },
+            });
+          }
+        } catch (err) {
+          failed += 1;
+          await prisma.automationLog
+            .create({
+              data: {
+                entityType: 'WHATSAPP_WEBHOOK',
+                entityId: typeof msg?.id === 'string' ? msg.id : 'unknown',
+                success: false,
+                message: `Failed to process an inbound WhatsApp message: ${String(err)}`,
+              },
+            })
+            .catch(() => undefined); // logging the failure must never itself crash the webhook
         }
       }
     }
   }
 
-  return { stored };
+  return { stored, failed };
 }

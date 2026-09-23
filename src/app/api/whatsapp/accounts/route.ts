@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireApiModule } from '@/lib/api-auth';
 import { encryptSecret } from '@/lib/crypto';
+import { createActiveWhatsAppAccount, WhatsAppAccountActivationRaceError } from '@/lib/whatsapp/accounts';
 import { z } from 'zod';
 
 const schema = z.object({
@@ -21,6 +22,10 @@ export async function GET() {
   return NextResponse.json({ accounts });
 }
 
+/** Creating an account makes it the (only) active one — see
+ * createActiveWhatsAppAccount(). This preserves the existing behavior
+ * ("saving an account is how you switch numbers") while guaranteeing only
+ * one account is ever active at a time. */
 export async function POST(req: NextRequest) {
   const session = await requireApiModule('whatsapp');
   if (session instanceof NextResponse) return session;
@@ -33,10 +38,16 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
   const { accessToken, ...rest } = parsed.data;
-  const account = await prisma.whatsAppAccount.create({
-    data: { ...rest, encryptedAccessToken: encryptSecret(accessToken) },
-    select: { id: true, label: true },
-  });
-
-  return NextResponse.json({ account }, { status: 201 });
+  try {
+    const account = await createActiveWhatsAppAccount({
+      ...rest,
+      encryptedAccessToken: encryptSecret(accessToken),
+    });
+    return NextResponse.json({ account: { id: account.id, label: account.label } }, { status: 201 });
+  } catch (err) {
+    if (err instanceof WhatsAppAccountActivationRaceError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    throw err;
+  }
 }

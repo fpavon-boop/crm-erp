@@ -7,7 +7,8 @@ export default async function WhatsAppSettingsPage() {
   await requireModule('whatsapp');
   const [accounts, templates] = await Promise.all([
     prisma.whatsAppAccount.findMany({
-      select: { id: true, label: true, phoneNumberId: true, businessAccountId: true, displayPhoneNumber: true },
+      select: { id: true, label: true, phoneNumberId: true, businessAccountId: true, displayPhoneNumber: true, active: true },
+      orderBy: { createdAt: 'desc' },
     }),
     prisma.whatsAppTemplate.findMany(),
   ]);

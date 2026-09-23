@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import NumberSetup from './NumberSetup';
 
-interface Account { id: string; label: string; phoneNumberId: string; businessAccountId: string; displayPhoneNumber: string | null }
+interface Account { id: string; label: string; phoneNumberId: string; businessAccountId: string; displayPhoneNumber: string | null; active: boolean }
 interface Template { id: string; name: string; language: string; category: string; bodyText: string }
 
 export default function WhatsAppSettingsClient({ accounts, templates }: { accounts: Account[]; templates: Template[] }) {
@@ -13,6 +13,21 @@ export default function WhatsAppSettingsClient({ accounts, templates }: { accoun
   const [templateForm, setTemplateForm] = useState({ name: '', language: 'en_US', category: 'UTILITY', bodyText: '' });
   const [savingAccount, setSavingAccount] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
+  const [activatingId, setActivatingId] = useState<string | null>(null);
+  const [activateError, setActivateError] = useState<string | null>(null);
+
+  async function activateAccount(id: string) {
+    setActivatingId(id);
+    setActivateError(null);
+    const res = await fetch(`/api/whatsapp/accounts/${id}/activate`, { method: 'POST' });
+    setActivatingId(null);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setActivateError(typeof data.error === 'string' ? data.error : 'Could not activate this account.');
+      return;
+    }
+    router.refresh();
+  }
 
   async function submitAccount(e: React.FormEvent) {
     e.preventDefault();
@@ -61,9 +76,25 @@ export default function WhatsAppSettingsClient({ accounts, templates }: { accoun
           <input className="input col-span-2" type="password" placeholder="Access token" required value={accountForm.accessToken} onChange={(e) => setAccountForm((f) => ({ ...f, accessToken: e.target.value }))} />
           <button type="submit" disabled={savingAccount} className="btn-primary col-span-2">{savingAccount ? 'Saving...' : 'Save account'}</button>
         </form>
+        {activateError && <p className="text-sm text-red-600 mt-3">{activateError}</p>}
         <ul className="text-sm mt-4 divide-y divide-slate-100">
           {accounts.map((a) => (
-            <li key={a.id} className="py-2">{a.label} — {a.displayPhoneNumber || a.phoneNumberId}</li>
+            <li key={a.id} className="py-2 flex items-center justify-between gap-3">
+              <span>
+                {a.label} — {a.displayPhoneNumber || a.phoneNumberId}
+                {a.active && <span className="ml-2 text-xs font-medium text-green-700">(active — sending uses this number)</span>}
+              </span>
+              {!a.active && (
+                <button
+                  type="button"
+                  className="text-blue-600 hover:text-blue-800 text-xs shrink-0"
+                  disabled={activatingId === a.id}
+                  onClick={() => activateAccount(a.id)}
+                >
+                  {activatingId === a.id ? 'Activating...' : 'Set as active'}
+                </button>
+              )}
+            </li>
           ))}
         </ul>
       </div>

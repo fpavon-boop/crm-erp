@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { handleInboundWebhook } from '@/lib/whatsapp/client';
+import { prisma } from '@/lib/prisma';
 
 export const runtime = 'nodejs';
 
@@ -55,7 +56,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
   }
 
-  await handleInboundWebhook(payload).catch((err) => console.error('WhatsApp webhook error', err));
+  // A genuine processing failure (bad DB connection, an unexpected payload
+  // shape that breaks before any per-message handling even starts) must
+  // not be swallowed: it's logged where it's actually visible, and the
+  // route returns a non-2xx so Meta retries delivery instead of the
+  // message being silently lost. Per-message failures within an otherwise
+  // successful batch are handled and logged individually inside
+  // handleInboundWebhook() and still result in a 200 here (see its
+  // comment) — Meta's retry is for "you never got this", not "some of
+  // several messages had a problem".
+  let result: { stored: number; failed: number };
+  try {
+    result = await handleInboundWebhook(payload);
+  } catch (err) {
+    console.error('WhatsApp webhook error', err);
+    await prisma.automationLog
+      .create({
+        data: {
+          entityType: 'WHATSAPP_WEBHOOK',
+          entityId: 'batch',
+          success: false,
+          message: `WhatsApp webhook processing failed: ${String(err)}`,
+        },
+      })
+      .catch(() => undefined);
+    return NextResponse.json({ error: 'Processing failed' }, { status: 500 });
+  }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, ...result });
 }

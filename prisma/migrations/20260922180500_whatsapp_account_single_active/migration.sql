@@ -1,0 +1,28 @@
+-- Enforces "at most one active WhatsAppAccount" at the database level, since
+-- the app sends WhatsApp messages using whichever active account it finds
+-- first when more than one exists (this caused a real production incident:
+-- two active accounts existed simultaneously and messages routed
+-- unpredictably).
+--
+-- Prisma's schema language cannot express a partial (WHERE-filtered) unique
+-- index, so this index is created directly in SQL and intentionally has no
+-- matching line in schema.prisma. That's expected and safe: production only
+-- ever runs `prisma migrate deploy` (applies migration files in order), never
+-- `migrate dev` (which reconciles schema.prisma against the database and
+-- could otherwise try to drop an index it doesn't recognize).
+--
+-- Before running this migration against production, check how many accounts
+-- are currently active:
+--
+--   SELECT id, label, "phoneNumberId", active FROM "WhatsAppAccount" WHERE active = true;
+--
+-- If more than one row comes back, decide which one should stay active and
+-- deactivate the rest first, e.g.:
+--
+--   UPDATE "WhatsAppAccount" SET active = false WHERE active = true AND id <> '<the one to keep>';
+--
+-- Postgres will otherwise reject this migration outright if more than one
+-- row has active = true (a safe failure: nothing is applied, no data is
+-- lost) and the deploy will stay stuck until it's fixed.
+
+CREATE UNIQUE INDEX "WhatsAppAccount_single_active" ON "WhatsAppAccount" ("active") WHERE "active" = true;

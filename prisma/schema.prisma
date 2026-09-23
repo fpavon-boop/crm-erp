@@ -661,7 +661,7 @@ enum SupplierInvoiceStatus {
 
 model SupplierInvoice {
   id              String                 @id @default(cuid())
-  number          String
+  number          String                 @unique
   supplierId      String?
   supplier        Company?               @relation(fields: [supplierId], references: [id], onDelete: SetNull)
   purchaseOrderId String?
