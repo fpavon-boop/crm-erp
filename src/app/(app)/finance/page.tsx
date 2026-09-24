@@ -62,7 +62,8 @@ export default async function FinancePage() {
         subtitle="Money in, money out, and what is still owed"
         actions={
           <div className="flex gap-2">
-            <Link href="/finance/receivables" className="btn-primary">Receivables</Link>
+            <Link href="/finance/profitability" className="btn-primary">Profitability</Link>
+            <Link href="/finance/receivables" className="btn-secondary">Receivables</Link>
             <Link href="/finance/bills" className="btn-secondary">Bills</Link>
             <Link href="/finance/expenses" className="btn-secondary">Expenses</Link>
           </div>
