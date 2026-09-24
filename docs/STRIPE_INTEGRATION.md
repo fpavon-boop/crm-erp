@@ -121,14 +121,13 @@ couldn't be created.
 | anything else | Accepted (`200`) but not acted on — see "Known limitations". |
 
 **Invoice status** is recomputed the same way after every reconciling
-event, using the exact same rule the pre-existing manual "record a
-payment" route already uses (`src/app/api/invoices/[id]/payments/route.ts`)
-— this phase doesn't invent a second, different rule for Stripe-originated
-payments:
-
-- `amountPaid <= 0` → `SENT`
-- `amountPaid >= total` → `PAID`
-- otherwise → `PARTIAL`
+event, using `deriveInvoiceStatus()` from `src/lib/accounts-receivable.ts`
+(Phase 5) — the single rule shared by this webhook, the manual "record a
+payment" route, and the overdue-check scheduler, so Stripe-originated
+payments never follow a different status rule than any other payment. See
+`docs/ACCOUNTS_RECEIVABLE.md` "The one authoritative rule" for the full
+precedence (DRAFT/CANCELLED untouched → PAID → OVERDUE →
+PARTIAL/SENT, using the invoice's own `dueDate`).
 
 **A "partial payment" isn't a distinct Stripe event** — it's simply a
 `payment_intent.succeeded` event whose `amount_received` is less than the

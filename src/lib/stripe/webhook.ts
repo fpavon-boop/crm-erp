@@ -1,7 +1,7 @@
 import Stripe from 'stripe';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import type { InvoiceStatus } from '@prisma/client';
+import { deriveInvoiceStatus } from '@/lib/accounts-receivable';
 
 type Db = typeof prisma | Prisma.TransactionClient;
 
@@ -52,12 +52,6 @@ async function logStripeIssue(db: Db, entityId: string | undefined, message: str
     .catch(() => undefined);
 }
 
-function computeInvoiceStatus(amountPaid: number, total: number): InvoiceStatus {
-  if (amountPaid <= 0) return 'SENT';
-  if (amountPaid >= total) return 'PAID';
-  return 'PARTIAL';
-}
-
 /** A successful (or partially-successful, in the sense of "less than the
  * full invoice total") PaymentIntent. Reconciliation requires the
  * PaymentIntent to carry `metadata.invoiceId` — set when the PaymentIntent
@@ -101,7 +95,10 @@ async function handlePaymentSucceeded(tx: Db, event: Stripe.Event) {
   const newPaid = Number(invoice.amountPaid) + amount;
   await tx.invoice.update({
     where: { id: invoice.id },
-    data: { amountPaid: newPaid, status: computeInvoiceStatus(newPaid, Number(invoice.total)) },
+    data: {
+      amountPaid: newPaid,
+      status: deriveInvoiceStatus({ status: invoice.status, total: Number(invoice.total), amountPaid: newPaid, dueDate: invoice.dueDate }),
+    },
   });
 }
 
@@ -155,7 +152,10 @@ async function handleChargeRefunded(tx: Db, event: Stripe.Event) {
   const newPaid = Math.max(0, Number(invoice.amountPaid) - delta);
   await tx.invoice.update({
     where: { id: invoice.id },
-    data: { amountPaid: newPaid, status: computeInvoiceStatus(newPaid, Number(invoice.total)) },
+    data: {
+      amountPaid: newPaid,
+      status: deriveInvoiceStatus({ status: invoice.status, total: Number(invoice.total), amountPaid: newPaid, dueDate: invoice.dueDate }),
+    },
   });
 }
 

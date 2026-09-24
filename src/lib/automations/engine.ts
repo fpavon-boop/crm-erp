@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/prisma';
 import { sendPaymentReminder } from '@/lib/automations/notifications';
 import { sendTemplate as sendWhatsAppTemplate } from '@/lib/whatsapp/client';
+import { deriveInvoiceStatus } from '@/lib/accounts-receivable';
 import type { AutomationRule } from '@prisma/client';
 
 const UNANSWERED_EMAIL_HOURS = 24;
@@ -45,15 +46,28 @@ async function logResult(ruleId: string | null, entityType: string, entityId: st
 }
 
 async function checkOverdueInvoices() {
-  const overdue = await prisma.invoice.findMany({
+  const candidates = await prisma.invoice.findMany({
     where: {
       status: { in: ['SENT', 'PARTIAL'] },
       dueDate: { lt: new Date() },
     },
   });
 
-  for (const invoice of overdue) {
-    await prisma.invoice.update({ where: { id: invoice.id }, data: { status: 'OVERDUE' } });
+  let flagged = 0;
+  for (const invoice of candidates) {
+    // Re-derive rather than blindly forcing OVERDUE: guards against a stale
+    // query result (e.g. a payment landed between the query and this loop)
+    // ever moving an already-PAID invoice backwards to OVERDUE.
+    const status = deriveInvoiceStatus({
+      status: invoice.status,
+      total: Number(invoice.total),
+      amountPaid: Number(invoice.amountPaid),
+      dueDate: invoice.dueDate,
+    });
+    if (status !== 'OVERDUE') continue;
+
+    await prisma.invoice.update({ where: { id: invoice.id }, data: { status } });
+    flagged += 1;
     const { created } = await ensureTask({
       title: `Follow up on overdue invoice ${invoice.number}`,
       description: `Invoice ${invoice.number} was due ${invoice.dueDate?.toDateString()} and is unpaid.`,
@@ -66,7 +80,7 @@ async function checkOverdueInvoices() {
       await logResult(null, 'INVOICE', invoice.id, result.sent, result.sent ? 'Reminder sent' : result.reason || 'not sent');
     }
   }
-  return overdue.length;
+  return flagged;
 }
 
 async function checkPendingOrders() {
