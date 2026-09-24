@@ -154,6 +154,23 @@ describe('Profitability reporting', () => {
     expect(row!.summary.grossProfit).toBe(43);
   });
 
+  it('an order line with no productId and a real product description (an unresolved WooCommerce SKU) is flagged as unknown cost, not silently $0', async () => {
+    // Regression test for a real production finding during the Phase 6
+    // deploy: every synced WooCommerce order line had productId: null with
+    // a real product description (SKU never resolved — see
+    // docs/WOOCOMMERCE_INTEGRATION.md), which must never be confused with a
+    // genuine "Shipping" line.
+    const order = await makeSoldOrder({
+      status: 'CONFIRMED',
+      items: [{ productId: null, quantity: 2, unitPrice: 149, description: 'Vesuvius Super Patch 3000 Mortar' }],
+    });
+    const rows = await profitability.getSalesOrderProfitability();
+    const row = rows.find((r) => r.orderId === order.id);
+    expect(row!.summary.hasUnknownCost).toBe(true);
+    expect(row!.summary.cogs).toBeNull();
+    expect(row!.summary.unknownCostRevenue).toBe(298);
+  });
+
   it('getCustomerProfitability groups by company, with orders lacking a company under "No customer assigned"', async () => {
     const product = await makeProduct({ cost: 2 });
     const company = await db.prisma.company.create({ data: { name: `Acme ${id()}`, type: 'CUSTOMER' } });

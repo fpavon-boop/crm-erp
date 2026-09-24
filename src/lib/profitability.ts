@@ -83,19 +83,30 @@ export async function getProductCostMap(db: Db = prisma): Promise<Map<string, Pr
 // Line-level and aggregate profitability
 // =============================================================================
 
+/** The exact, literal description WooCommerce-sourced shipping charges are
+ * imported under (`buildOrderItemsData()` in src/lib/wordpress/woocommerce.ts)
+ * — the ONLY case where a line legitimately has no productId and no COGS
+ * question to answer. Any other productId-less line is real, unmapped
+ * product revenue (an "unknown SKU" the sync warned about but still
+ * imported — see docs/WOOCOMMERCE_INTEGRATION.md) and its cost must be
+ * treated as unknown, never silently zero. */
+const SHIPPING_LINE_DESCRIPTION = 'Shipping';
+
 export interface ProfitabilityLineInput {
   productId: string | null;
   quantity: number;
   unitPrice: number;
   discount: number;
+  description: string;
 }
 
 export interface LineProfitability {
   revenue: number;
-  /** null only for a real product whose cost could not be resolved at all —
-   * see costSource. A non-product line (e.g. a "Shipping" order line, which
-   * carries no productId) is `0`, not null: there is no COGS question to
-   * answer for it, so it must never make an aggregate look "incomplete." */
+  /** null for a product whose cost could not be resolved (including a
+   * product WooCommerce couldn't map to any productId at all — see
+   * costSource). `0` only for the one genuinely non-product line type
+   * (shipping) — there is no COGS question to answer for it, so it must
+   * never make an aggregate look "incomplete." */
   cogs: number | null;
   unitCost: number | null;
   costSource: CostSource | 'not_applicable';
@@ -112,7 +123,14 @@ export function computeLineProfitability(
 ): LineProfitability {
   const revenue = round2(line.quantity * line.unitPrice - line.discount);
   if (!line.productId) {
-    return { revenue, cogs: 0, unitCost: null, costSource: 'not_applicable' };
+    if (line.description === SHIPPING_LINE_DESCRIPTION) {
+      return { revenue, cogs: 0, unitCost: null, costSource: 'not_applicable' };
+    }
+    // A real product line WooCommerce (or a manual entry) never linked to a
+    // productId — e.g. an unresolved SKU (docs/WOOCOMMERCE_INTEGRATION.md).
+    // This is real product revenue with a genuinely unknown cost, not a
+    // non-product line — never coerced to a silent $0.
+    return { revenue, cogs: null, unitCost: null, costSource: 'unknown' };
   }
   const info = costMap.get(line.productId);
   if (!info || info.unitCost === null) {
@@ -252,6 +270,7 @@ async function fetchScoredOrderLines(filters: DateRangeFilter, db: Db): Promise<
           quantity: true,
           unitPrice: true,
           discount: true,
+          description: true,
           product: { select: { sku: true, name: true } },
         },
       },
@@ -263,7 +282,13 @@ async function fetchScoredOrderLines(filters: DateRangeFilter, db: Db): Promise<
     for (const item of o.items) {
       const quantity = toNumber(item.quantity);
       const profit = computeLineProfitability(
-        { productId: item.productId, quantity, unitPrice: toNumber(item.unitPrice), discount: toNumber(item.discount) },
+        {
+          productId: item.productId,
+          quantity,
+          unitPrice: toNumber(item.unitPrice),
+          discount: toNumber(item.discount),
+          description: item.description,
+        },
         costMap
       );
       lines.push({
@@ -474,7 +499,7 @@ export async function getInvoiceProfitability(
       issueDate: true,
       companyId: true,
       company: { select: { name: true } },
-      items: { select: { productId: true, quantity: true, unitPrice: true, discount: true } },
+      items: { select: { productId: true, quantity: true, unitPrice: true, discount: true, description: true } },
     },
   });
 
@@ -482,7 +507,13 @@ export async function getInvoiceProfitability(
     .map((inv) => {
       const lines = inv.items.map((item) =>
         computeLineProfitability(
-          { productId: item.productId, quantity: toNumber(item.quantity), unitPrice: toNumber(item.unitPrice), discount: toNumber(item.discount) },
+          {
+            productId: item.productId,
+            quantity: toNumber(item.quantity),
+            unitPrice: toNumber(item.unitPrice),
+            discount: toNumber(item.discount),
+            description: item.description,
+          },
           costMap
         )
       );

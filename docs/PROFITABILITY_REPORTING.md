@@ -82,16 +82,55 @@ needed, it would require a schema change (a `ProductVariant.cost` column or
 a `productVariantId`-keyed weighted average) — out of scope here, since
 this phase makes no schema changes.
 
-### A line with no product (e.g. Shipping)
+### A line with no product — Shipping vs. an unresolved SKU
 
-A line with no `productId` — currently only the "Shipping" line WooCommerce
-sync creates — has **no COGS question to answer**: it contributes `0` to
-COGS (a known, real zero — the business doesn't buy shipping charges as
-inventory), not `null`/unknown. This is a deliberate distinction from an
-actual product whose cost genuinely couldn't be resolved: see
-`costSource: 'not_applicable'` vs `'unknown'` in `LineProfitability`. A
-non-product line must never make an otherwise fully-known aggregate look
-incomplete.
+A `productId`-less line is **not always** a non-product line, and this
+module distinguishes the two cases precisely rather than treating every
+`productId: null` line the same way (an earlier version of this code did
+exactly that, and real production data caught it — see the callout box
+below):
+
+- **A genuine "Shipping" line** — `description` is literally `"Shipping"`,
+  the exact string `buildOrderItemsData()` in
+  `src/lib/wordpress/woocommerce.ts` uses. This has **no COGS question to
+  answer**: it contributes `0` to COGS (a known, real zero — the business
+  doesn't buy shipping charges as inventory), not `null`/unknown.
+  `costSource: 'not_applicable'`.
+- **Anything else with no `productId`** — this is real product revenue
+  whose SKU never resolved to a CRM product (see
+  `docs/WOOCOMMERCE_INTEGRATION.md`, "unknown SKU" — the sync still imports
+  the line, with a warning, rather than discarding it). This is treated
+  exactly like a product with an unresolved cost: `costSource: 'unknown'`,
+  `cogs: null`.
+
+> **Found during the Phase 6 production deploy:** the first version of this
+> logic treated *every* `productId: null` line as `not_applicable`
+> (COGS `$0`). Real WooCommerce order data pulled up on
+> `/finance/profitability` showed 100% margin across the board — every
+> synced order line had `productId: null`, but with real product
+> descriptions ("Vesuvius Super Patch 3000 Mortar", "Clipper Dp straight
+> 9x4.5x3", etc.), not shipping charges. That was a silent-zero bug — the
+> exact failure mode this phase's rules said not to allow. Fixed by keying
+> the distinction on the `"Shipping"` description sentinel instead of on
+> `productId` alone; covered by a regression test in
+> `tests/profitability-calculations.test.ts` and
+> `tests/profitability-authorization.test.ts`.
+
+A non-product (`not_applicable`) line must never make an otherwise
+fully-known aggregate look incomplete; an unmapped-product line must never
+be silently treated as cost-free. One `productId: null` line satisfies
+exactly one of those two categories, never both.
+
+**A consequence worth knowing**: an unmapped-SKU line's revenue is still
+counted in the overall total, and in the Order/Customer/Monthly
+breakdowns (all keyed by order, not by product) — but it does **not**
+appear in the **By Product** breakdown at all, since there is no
+`productId` to group it under. If a large share of revenue is showing as
+unknown-cost, check the **By order** table (or `AutomationLog` entries
+tagged `WOOCOMMERCE_SYNC`) to find which orders/SKUs need mapping — fixing
+the SKU mapping in WooCommerce/CRM (see
+`docs/WOOCOMMERCE_INTEGRATION.md`) is the actual remedy, not something
+this reporting phase can resolve on its own.
 
 ## How unknown/missing costs are reported and handled
 

@@ -84,9 +84,10 @@ export default async function ProfitabilityPage({
 
       {overall.hasUnknownCost && (
         <div className="card p-4 mb-4 border-amber-300 bg-amber-50 text-amber-900 text-sm">
-          <strong>{overall.unknownCostLineCount}</strong> product line{overall.unknownCostLineCount === 1 ? '' : 's'}{' '}
-          totaling <strong>{money(overall.unknownCostRevenue)}</strong> in revenue have no determinable cost (no
-          purchase history and no standard cost set), so total COGS and gross margin below are shown as a floor
+          <strong>{overall.unknownCostLineCount}</strong> order line{overall.unknownCostLineCount === 1 ? '' : 's'}{' '}
+          totaling <strong>{money(overall.unknownCostRevenue)}</strong> in revenue have no determinable cost — either
+          the product has no purchase history and no standard cost set, or the line never resolved to a product at
+          all (e.g. an unmapped WooCommerce SKU) — so total COGS and gross margin below are shown as a floor
           (&quot;X+&quot;), not a final figure. See <code>docs/PROFITABILITY_REPORTING.md</code>.
         </div>
       )}
