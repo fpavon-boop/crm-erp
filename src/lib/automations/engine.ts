@@ -6,6 +6,29 @@ import type { AutomationRule } from '@prisma/client';
 
 const UNANSWERED_EMAIL_HOURS = 24;
 const PENDING_ORDER_DAYS = 3;
+/** Phase 11 (SYSTEM_AUDIT.md E2): minimum time between two payment-reminder
+ * sends for the same invoice. Without this, completing the follow-up task
+ * (marking it DONE) let the very next scheduler tick immediately recreate
+ * it and resend the reminder email, since ensureTask()'s own dedupe only
+ * checks for a currently-*open* task — "was a reminder already sent
+ * recently" is a different question, answered here from the actual send
+ * record (CommunicationLog), not from task state. */
+const PAYMENT_REMINDER_COOLDOWN_DAYS = 7;
+
+/** Pure — a scheduler tick's "is a new reminder allowed right now" check,
+ * given only the last time one was actually (successfully) sent and the
+ * current time. `null` (never sent) always allows. Kept standalone so the
+ * cooldown boundary math (exactly N days, one ms under/over) is directly
+ * unit-testable without a database. */
+export function isReminderCooldownActive(
+  lastSentAt: Date | null,
+  now: Date,
+  cooldownDays: number = PAYMENT_REMINDER_COOLDOWN_DAYS
+): boolean {
+  if (!lastSentAt) return false;
+  const elapsedMs = now.getTime() - lastSentAt.getTime();
+  return elapsedMs < cooldownDays * 24 * 60 * 60 * 1000;
+}
 
 async function ensureTask(params: {
   title: string;
@@ -45,7 +68,21 @@ async function logResult(ruleId: string | null, entityType: string, entityId: st
   });
 }
 
-async function checkOverdueInvoices() {
+/** The last time a payment_reminder was actually SENT for this invoice
+ * (Phase 10's CommunicationLog audit trail), or null if never. Deliberately
+ * keyed on 'SENT' only — a FAILED attempt (e.g. SMTP briefly down) should
+ * not itself start a 7-day cooldown; the invoice is still just as overdue
+ * and unreminded as before that attempt. */
+async function getLastPaymentReminderSentAt(invoiceId: string): Promise<Date | null> {
+  const last = await prisma.communicationLog.findFirst({
+    where: { relatedType: 'INVOICE', relatedId: invoiceId, templateKey: 'payment_reminder', status: 'SENT' },
+    orderBy: { occurredAt: 'desc' },
+    select: { occurredAt: true },
+  });
+  return last?.occurredAt ?? null;
+}
+
+export async function checkOverdueInvoices() {
   const candidates = await prisma.invoice.findMany({
     where: {
       status: { in: ['SENT', 'PARTIAL'] },
@@ -53,6 +90,7 @@ async function checkOverdueInvoices() {
     },
   });
 
+  const now = new Date();
   let flagged = 0;
   for (const invoice of candidates) {
     // Re-derive rather than blindly forcing OVERDUE: guards against a stale
@@ -68,6 +106,14 @@ async function checkOverdueInvoices() {
 
     await prisma.invoice.update({ where: { id: invoice.id }, data: { status } });
     flagged += 1;
+
+    // Still within the cooldown of the last reminder actually sent for
+    // this invoice: skip both recreating the follow-up task and sending
+    // another reminder this tick — completing the task early must not
+    // itself re-trigger either.
+    const lastSentAt = await getLastPaymentReminderSentAt(invoice.id);
+    if (isReminderCooldownActive(lastSentAt, now)) continue;
+
     const { created } = await ensureTask({
       title: `Follow up on overdue invoice ${invoice.number}`,
       description: `Invoice ${invoice.number} was due ${invoice.dueDate?.toDateString()} and is unpaid.`,

@@ -264,10 +264,15 @@ export interface CreateInvoiceForOrderResult {
  * commit or rollback), so two simultaneous requests can't both pass the
  * "does an invoice already exist?" check before either has written one.
  * Calls for *different* orders are unaffected and run fully in parallel.
+ *
+ * `createdById` is `null` for a system-triggered invoice (Phase 11: the
+ * WooCommerce sync auto-creates an invoice for an order Woo reports as
+ * already paid — there is no signed-in user to attribute it to) — the
+ * schema's own `Invoice.createdById` is nullable for exactly this reason.
  */
 export async function createInvoiceForSalesOrder(
   orderId: string,
-  createdById: string
+  createdById: string | null
 ): Promise<CreateInvoiceForOrderResult> {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${orderId}))`;

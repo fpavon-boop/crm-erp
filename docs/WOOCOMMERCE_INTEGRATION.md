@@ -121,6 +121,20 @@ SalesOrderItem line (`description: "Shipping"`, quantity 1, unit price =
 shipping total) — visible on the order like any other line, not discarded
 and not hidden.
 
+## Payment and refund reconciliation (Phase 11)
+
+An order synced while WooCommerce's own status is `processing` or
+`completed` automatically gets an `Invoice` (created if none exists yet,
+reusing one if it does) and a `Payment` for its full total — Finance's
+"received" figure now reflects money WooCommerce orders actually brought
+in, not just what they were worth. An order later reported as `refunded`
+reverses that payment (`Payment.refundedAmount`, the invoice's
+`amountPaid`/status) instead of being folded into the same `CANCELLED`
+bucket as a plain cancellation. Both are idempotent across repeated syncs
+via `Payment`'s own `(externalSource, externalId)` uniqueness, the same
+pattern as every other synced model here. Full detail:
+`docs/FINANCIAL_ACCURACY_AND_AUTOMATION.md`.
+
 ## Inventory behavior
 
 WooCommerce reports an **absolute** stock quantity per product it manages

@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/prisma';
 import { recordStockMovement } from '@/lib/automations/stock';
+import { createInvoiceForSalesOrder } from '@/lib/sales-orders';
+import { deriveInvoiceStatus } from '@/lib/accounts-receivable';
 
 const EXTERNAL_SOURCE = 'woocommerce';
 
@@ -42,6 +44,11 @@ interface WooOrder {
   shipping_total?: string;
   currency: string;
   date_created_gmt?: string;
+  // Phase 11 (SYSTEM_AUDIT.md L): when WooCommerce itself reports this
+  // order as paid, these describe that payment. date_paid_gmt is absent on
+  // an order that was never paid (e.g. still 'pending'/'on-hold').
+  date_paid_gmt?: string;
+  payment_method_title?: string;
   billing: {
     email: string;
     first_name: string;
@@ -364,6 +371,161 @@ async function buildOrderItemsData(o: WooOrder, warnings: string[], siteId: stri
   return { items, totals };
 }
 
+/** The raw WooCommerce order statuses that mean "the customer has paid" —
+ * checked against the order's *own* status string, before mapWooStatus()
+ * maps it onto a SalesOrderStatus, since 'processing' and 'completed' both
+ * map to different SalesOrderStatus values but mean the same thing
+ * financially. */
+const WOO_PAID_STATUSES = new Set(['processing', 'completed']);
+
+/**
+ * Records a Payment for a WooCommerce order Woo itself reports as paid
+ * ('processing' or 'completed') — SYSTEM_AUDIT.md L: previously a
+ * WooCommerce order counted as "sold" in Finance but never as "received",
+ * because nothing here ever created a Payment row for one, even though the
+ * customer already paid online.
+ *
+ * Ensures an Invoice exists for the order first (auto-creating one via the
+ * same createInvoiceForSalesOrder() the "Create Invoice" button uses —
+ * idempotent, so a manually-created invoice is reused, not duplicated),
+ * then records the payment against it.
+ *
+ * Idempotent by construction: Payment's own (externalSource, externalId)
+ * unique constraint — externalId the WooCommerce order id — means a second
+ * sync of the same already-recorded paid order hits that constraint and is
+ * treated as already-applied, never a duplicate Payment. Checked explicitly
+ * first (rather than relying on catching the constraint) so a re-sync is a
+ * silent, cheap no-op rather than a caught error on every subsequent sync.
+ *
+ * Assumes the order was paid in full — WooCommerce's REST API doesn't
+ * expose a distinct "amount paid so far" for a simple order, and
+ * 'processing'/'completed' are the statuses a standard checkout reaches
+ * only after the configured payment gateway confirms full payment. See
+ * docs/FINANCIAL_ACCURACY_AND_AUTOMATION.md "Known limitations" for what
+ * this does not cover (partial/split payments).
+ */
+async function recordPaymentForPaidWooOrder(
+  salesOrderId: string,
+  o: WooOrder,
+  warnings: string[],
+  siteId: string
+): Promise<void> {
+  if (!WOO_PAID_STATUSES.has(o.status)) return;
+  const amount = Number(o.total || 0);
+  if (!(amount > 0)) return;
+
+  const externalId = String(o.id);
+  const already = await prisma.payment.findUnique({
+    where: { externalSource_externalId: { externalSource: EXTERNAL_SOURCE, externalId } },
+  });
+  if (already) return; // already recorded on a prior sync — nothing to do
+
+  try {
+    const { invoice } = await createInvoiceForSalesOrder(salesOrderId, null);
+
+    const paidAtRaw = o.date_paid_gmt || o.date_created_gmt;
+    const paidAt = paidAtRaw ? new Date(`${paidAtRaw}Z`) : new Date();
+
+    await prisma.$transaction(async (tx) => {
+      await tx.payment.create({
+        data: {
+          invoiceId: invoice.id,
+          amount,
+          method: o.payment_method_title || 'WooCommerce',
+          reference: `WooCommerce order #${o.number}`,
+          paidAt: Number.isNaN(paidAt.getTime()) ? new Date() : paidAt,
+          externalSource: EXTERNAL_SOURCE,
+          externalId,
+        },
+      });
+
+      const fresh = await tx.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
+      const newPaid = Number(fresh.amountPaid) + amount;
+      // A freshly auto-created invoice starts life as DRAFT (the schema
+      // default) — deriveInvoiceStatus() deliberately never moves a DRAFT
+      // invoice on its own (DRAFT/CANCELLED are treated as manually-set,
+      // terminal states elsewhere in this app). That rule exists for a
+      // human-managed invoice that genuinely hasn't been issued yet; this
+      // one represents an already-completed, already-paid transaction, so
+      // it's evaluated as if it started SENT rather than DRAFT — the
+      // amountPaid-vs-total precedence in deriveInvoiceStatus then
+      // correctly resolves it straight to PAID.
+      const baseStatus = fresh.status === 'DRAFT' ? 'SENT' : fresh.status;
+      const status = deriveInvoiceStatus({ status: baseStatus, total: Number(fresh.total), amountPaid: newPaid, dueDate: fresh.dueDate });
+      await tx.invoice.update({ where: { id: fresh.id }, data: { amountPaid: newPaid, status } });
+    });
+  } catch (err) {
+    const message = `Failed to record payment for WooCommerce order ${o.id} (#${o.number}): ${err instanceof Error ? err.message : String(err)}`;
+    warnings.push(message);
+    await logSyncIssue(siteId, String(o.id), message);
+  }
+}
+
+/**
+ * Reverses a previously-recorded WooCommerce payment when Woo reports the
+ * order as 'refunded' — SYSTEM_AUDIT.md K: a refund is a distinct financial
+ * event from a plain cancellation (money that was received and then
+ * returned, not a sale that never happened) and must be reflected as such
+ * rather than silently vanishing into the same CANCELLED bucket.
+ *
+ * Mirrors the existing Stripe refund handler's own logic exactly
+ * (`handleChargeRefunded` in src/lib/stripe/webhook.ts): tracked via the
+ * Payment's own `refundedAmount` field (shared with Stripe, not a second
+ * parallel field), idempotent by comparing against the delta already
+ * applied, and re-derives the invoice's status/amountPaid the same way a
+ * Stripe refund does.
+ *
+ * Treats a WooCommerce 'refunded' order as a full refund of whatever was
+ * recorded as paid for it — see docs/FINANCIAL_ACCURACY_AND_AUTOMATION.md
+ * "Known limitations" for why (WooCommerce's order-level status doesn't
+ * distinguish a partial from a full refund; a partial refund normally
+ * leaves the order in its prior status with a separate refund record this
+ * sync does not fetch).
+ *
+ * If no Payment was ever recorded for this order (it was refunded before
+ * ever being synced in a paid state, or was paid outside what this sync
+ * tracks), there is nothing to reverse — logged as a warning rather than
+ * fabricating a payment to then refund.
+ */
+async function reverseWooOrderPaymentIfRefunded(o: WooOrder, warnings: string[], siteId: string): Promise<void> {
+  if (o.status !== 'refunded') return;
+
+  const externalId = String(o.id);
+  const payment = await prisma.payment.findUnique({
+    where: { externalSource_externalId: { externalSource: EXTERNAL_SOURCE, externalId } },
+  });
+  if (!payment) {
+    const message = `WooCommerce order ${o.id} (#${o.number}) was refunded, but no Payment was ever recorded for it — nothing to reverse.`;
+    warnings.push(message);
+    await logSyncIssue(siteId, String(o.id), message);
+    return;
+  }
+
+  const fullAmount = Number(payment.amount);
+  const delta = fullAmount - Number(payment.refundedAmount);
+  if (delta <= 0) return; // already fully reflects this refund — re-sync of an already-refunded order
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.payment.update({ where: { id: payment.id }, data: { refundedAmount: fullAmount } });
+
+      const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: payment.invoiceId } });
+      const newPaid = Math.max(0, Number(invoice.amountPaid) - delta);
+      await tx.invoice.update({
+        where: { id: invoice.id },
+        data: {
+          amountPaid: newPaid,
+          status: deriveInvoiceStatus({ status: invoice.status, total: Number(invoice.total), amountPaid: newPaid, dueDate: invoice.dueDate }),
+        },
+      });
+    });
+  } catch (err) {
+    const message = `Failed to reverse payment for refunded WooCommerce order ${o.id} (#${o.number}): ${err instanceof Error ? err.message : String(err)}`;
+    warnings.push(message);
+    await logSyncIssue(siteId, String(o.id), message);
+  }
+}
+
 /** Guards against two syncs of the same site running at once (SYSTEM_AUDIT.md
  * E4) — both would race on the same upserts and customer-resolution
  * checks. This app runs as a single Node process/container (see
@@ -496,7 +658,7 @@ export async function syncWooCommerce(siteId: string): Promise<{
         const createdAt = o.date_created_gmt ? new Date(`${o.date_created_gmt}Z`) : undefined;
         const validCreatedAt = createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : undefined;
 
-        await prisma.salesOrder.upsert({
+        const salesOrder = await prisma.salesOrder.upsert({
           where: { externalSource_externalId: { externalSource: EXTERNAL_SOURCE, externalId: String(o.id) } },
           create: {
             number: `WOO-${o.number}`,
@@ -530,6 +692,15 @@ export async function syncWooCommerce(siteId: string): Promise<{
           },
         });
         orders += 1;
+
+        // Phase 11 (SYSTEM_AUDIT.md L, K) — payment/refund reconciliation.
+        // Each of these catches its own errors internally and never throws,
+        // so a payment/refund failure is recorded as its own warning
+        // without being misattributed to (or mistaken for) an order sync
+        // failure, and never rolls back the order upsert that already
+        // succeeded just above.
+        await recordPaymentForPaidWooOrder(salesOrder.id, o, warnings, siteId);
+        await reverseWooOrderPaymentIfRefunded(o, warnings, siteId);
       } catch (err) {
         const message = `Failed to sync WooCommerce order ${o.id} (#${o.number}): ${err instanceof Error ? err.message : String(err)}`;
         warnings.push(message);
@@ -543,7 +714,7 @@ export async function syncWooCommerce(siteId: string): Promise<{
   }
 }
 
-function mapWooStatus(status: string): 'DRAFT' | 'CONFIRMED' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED' {
+function mapWooStatus(status: string): 'DRAFT' | 'CONFIRMED' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED' | 'REFUNDED' {
   switch (status) {
     case 'processing':
       return 'CONFIRMED';
@@ -552,9 +723,15 @@ function mapWooStatus(status: string): 'DRAFT' | 'CONFIRMED' | 'SHIPPED' | 'DELI
     case 'shipped':
       return 'SHIPPED';
     case 'cancelled':
-    case 'refunded':
     case 'failed':
       return 'CANCELLED';
+    // SYSTEM_AUDIT.md K: previously conflated with 'cancelled' — a refund
+    // means the sale happened and the money was returned, which is a
+    // financially distinct event from an order that was never completed at
+    // all. See reverseWooOrderPaymentIfRefunded() for the corresponding
+    // Payment-level reversal.
+    case 'refunded':
+      return 'REFUNDED';
     default:
       return 'DRAFT';
   }

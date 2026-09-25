@@ -485,6 +485,17 @@ enum SalesOrderStatus {
   SHIPPED
   DELIVERED
   CANCELLED
+  // Phase 11 (SYSTEM_AUDIT.md K): a distinct terminal state for "this sale
+  // happened, then the money was returned" — never manually selectable
+  // (absent from every hardcoded transition list: OrderActions.tsx's
+  // NEXT_STATUS, the status route's zod enum, and the order-creation
+  // schema in validation.ts), only ever set by the WooCommerce sync when a
+  // Woo order's own status is 'refunded'. Deliberately excluded from
+  // STOCK_HOLDING_STATUSES (src/lib/automations/stock.ts) and from every
+  // revenue/"sold" aggregation's status filter, the same way CANCELLED
+  // already is — a refunded sale should not count as current stock held or
+  // as revenue, in inventory or in Finance/Profitability/Dashboard alike.
+  REFUNDED
 }
 
 model SalesOrder {
@@ -612,6 +623,19 @@ model Payment {
   stripePaymentIntentId String? @unique
   stripeChargeId        String?
   refundedAmount        Decimal @default(0) @db.Decimal(14, 2)
+
+  // WooCommerce integration (Phase 11, SYSTEM_AUDIT.md L) — set only for a
+  // Payment auto-recorded from a WooCommerce order synced in a paid state
+  // ('processing'/'completed'). The same (externalSource, externalId)
+  // idempotency pattern every other WooCommerce-synced model already uses
+  // (Company/Contact/Product/ProductVariant/SalesOrder) — externalId is the
+  // WooCommerce order id, so re-syncing the same paid order can never
+  // record a second Payment for it. refundedAmount (above) is reused, not
+  // duplicated, to reflect a later WooCommerce refund of this same payment.
+  externalSource String?
+  externalId     String?
+
+  @@unique([externalSource, externalId])
 }
 
 // Records every Stripe webhook event this app has successfully processed,
