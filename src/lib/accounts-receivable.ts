@@ -249,10 +249,21 @@ export interface AccountsReceivableDashboard {
  * src/lib/finance.ts, not part of accounts receivable) and derives both
  * the summary and aging views from the same single query — one read, two
  * ways of looking at it, never two separately-maintained figures.
+ *
+ * `companyId` narrows this to one customer's invoices (used by the
+ * management dashboard's customer filter — see docs/MANAGEMENT_DASHBOARD.md) without
+ * duplicating this module's status/balance logic there.
  */
-export async function getAccountsReceivableDashboard(now: Date = new Date()): Promise<AccountsReceivableDashboard> {
+export async function getAccountsReceivableDashboard(
+  now: Date = new Date(),
+  companyId?: string
+): Promise<AccountsReceivableDashboard> {
   const invoices = await prisma.invoice.findMany({
-    where: { type: 'INVOICE', status: { in: [...OPEN_STATUSES, 'PAID'] } },
+    where: {
+      type: 'INVOICE',
+      status: { in: [...OPEN_STATUSES, 'PAID'] },
+      ...(companyId ? { companyId } : {}),
+    },
     select: { status: true, total: true, amountPaid: true, dueDate: true },
   });
   const normalized = invoices.map((i) => ({
