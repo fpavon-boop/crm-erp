@@ -16,6 +16,7 @@ describe('Inventory hardening (Phase 1)', () => {
   let createSalesOrderWithInventoryEffect: typeof import('../src/lib/sales-orders')['createSalesOrderWithInventoryEffect'];
   let receiveGoodsForPurchaseOrder: typeof import('../src/lib/purchase-orders')['receiveGoodsForPurchaseOrder'];
   let OverReceiptError: typeof import('../src/lib/purchase-orders')['OverReceiptError'];
+  let InvalidPurchaseOrderTransitionError: typeof import('../src/lib/purchase-orders')['InvalidPurchaseOrderTransitionError'];
   let recordStockMovement: typeof import('../src/lib/automations/stock')['recordStockMovement'];
 
   beforeAll(async () => {
@@ -27,6 +28,7 @@ describe('Inventory hardening (Phase 1)', () => {
     const purchaseOrders = await import('../src/lib/purchase-orders');
     receiveGoodsForPurchaseOrder = purchaseOrders.receiveGoodsForPurchaseOrder;
     OverReceiptError = purchaseOrders.OverReceiptError;
+    InvalidPurchaseOrderTransitionError = purchaseOrders.InvalidPurchaseOrderTransitionError;
     const stock = await import('../src/lib/automations/stock');
     recordStockMovement = stock.recordStockMovement;
   }, 60000);
@@ -319,25 +321,46 @@ describe('Inventory hardening (Phase 1)', () => {
       expect(Number(poItem.quantityReceived)).toBe(20);
     });
 
-    it('repeated/duplicate receiving that would exceed the ordered quantity is rejected, with nothing written', async () => {
+    it('repeated/duplicate receiving after the PO is already fully RECEIVED is rejected by the lifecycle guard, with nothing written', async () => {
       const { po, variant, poItemId } = await seedPurchaseOrder(10);
       await receiveGoodsForPurchaseOrder(po.id, warehouseId, [
         { purchaseOrderItemId: poItemId, productVariantId: variant.id, quantity: 10 },
       ]);
 
-      // Same request, resubmitted (double-click / retry) — would push
-      // quantityReceived to 20 against an order for only 10.
+      // Same request, resubmitted (double-click / retry) — the PO is now
+      // RECEIVED, so this is rejected by the lifecycle guard (Phase 7)
+      // before the over-receipt math even runs; see the next test for the
+      // over-receipt guard's own error when the PO is still receivable.
       await expect(
         receiveGoodsForPurchaseOrder(po.id, warehouseId, [
           { purchaseOrderItemId: poItemId, productVariantId: variant.id, quantity: 10 },
         ])
-      ).rejects.toBeInstanceOf(OverReceiptError);
+      ).rejects.toBeInstanceOf(InvalidPurchaseOrderTransitionError);
 
       expect(await level(variant.id)).toBe(10); // unchanged by the rejected attempt
       const poItem = await db.prisma.purchaseOrderItem.findUniqueOrThrow({ where: { id: poItemId } });
       expect(Number(poItem.quantityReceived)).toBe(10); // unchanged
       const allReceipts = await db.prisma.goodsReceipt.findMany({ where: { purchaseOrderId: po.id } });
       expect(allReceipts).toHaveLength(1); // the rejected attempt created no second receipt
+    });
+
+    it('a resubmission that would over-receive while the PO is still PARTIALLY_RECEIVED (not yet complete) is rejected by the over-receipt guard specifically', async () => {
+      const { po, variant, poItemId } = await seedPurchaseOrder(10);
+      await receiveGoodsForPurchaseOrder(po.id, warehouseId, [
+        { purchaseOrderItemId: poItemId, productVariantId: variant.id, quantity: 6 },
+      ]);
+
+      // PO is PARTIALLY_RECEIVED (still a receivable status) — a second
+      // request for 6 more would total 12 against an order for only 10.
+      await expect(
+        receiveGoodsForPurchaseOrder(po.id, warehouseId, [
+          { purchaseOrderItemId: poItemId, productVariantId: variant.id, quantity: 6 },
+        ])
+      ).rejects.toBeInstanceOf(OverReceiptError);
+
+      expect(await level(variant.id)).toBe(6); // unchanged by the rejected attempt
+      const poItem = await db.prisma.purchaseOrderItem.findUniqueOrThrow({ where: { id: poItemId } });
+      expect(Number(poItem.quantityReceived)).toBe(6);
     });
 
     it('concurrent receiving requests racing near the remaining-quantity boundary: at most the ordered amount is ever received', async () => {

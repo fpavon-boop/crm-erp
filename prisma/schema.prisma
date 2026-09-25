@@ -664,6 +664,15 @@ model GoodsReceipt {
   notes           String?
   createdAt       DateTime @default(now())
 
+  // Phase 7: an optional, caller-supplied idempotency key. When a client
+  // (the UI form, or any other caller) submits the same key twice — a
+  // double-click, a network retry — the second submission finds this row
+  // and returns it unchanged instead of creating a second receipt and
+  // double-incrementing inventory. Nullable because it's opt-in: a caller
+  // that doesn't supply one gets no idempotency guarantee, same as before
+  // this column existed. See docs/PURCHASING_AND_RECEIVING.md.
+  idempotencyKey  String?  @unique
+
   items           GoodsReceiptItem[]
 }
 

@@ -13,6 +13,17 @@ interface Item {
 }
 interface Warehouse { id: string; name: string }
 
+/** Generates a fresh key for one logical "receive goods" submission. Kept
+ * in state and reused across retries of the same click (e.g. the browser
+ * silently retrying a dropped connection) so the server can recognize a
+ * duplicate and no-op it instead of double-receiving; a new key is drawn
+ * only after a submission actually succeeds. */
+function newIdempotencyKey(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default function ReceiveGoodsForm({ purchaseOrderId, items }: { purchaseOrderId: string; items: Item[] }) {
   const router = useRouter();
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
@@ -21,6 +32,8 @@ export default function ReceiveGoodsForm({ purchaseOrderId, items }: { purchaseO
     Object.fromEntries(items.map((i) => [i.id, Math.max(i.quantity - i.quantityReceived, 0)]))
   );
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
 
   useEffect(() => {
     fetch('/api/warehouses')
@@ -38,8 +51,10 @@ export default function ReceiveGoodsForm({ purchaseOrderId, items }: { purchaseO
     e.preventDefault();
     if (!warehouseId) return;
     setSaving(true);
+    setError(null);
     const payload = {
       warehouseId,
+      idempotencyKey,
       items: pending
         .filter((i) => quantities[i.id] > 0)
         .map((i) => ({
@@ -49,12 +64,21 @@ export default function ReceiveGoodsForm({ purchaseOrderId, items }: { purchaseO
           quantity: quantities[i.id],
         })),
     };
-    await fetch(`/api/purchase-orders/${purchaseOrderId}/receive`, {
+    const res = await fetch(`/api/purchase-orders/${purchaseOrderId}/receive`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     setSaving(false);
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      setError(data?.error || 'Could not record this receipt.');
+      return;
+    }
+    // Success (or a recognized duplicate of this exact submission) — draw a
+    // fresh key so the next receipt is a genuinely new event, not another
+    // retry of this one.
+    setIdempotencyKey(newIdempotencyKey());
     router.refresh();
   }
 
@@ -67,13 +91,14 @@ export default function ReceiveGoodsForm({ purchaseOrderId, items }: { purchaseO
         </select>
       </div>
       <table className="table-base">
-        <thead><tr><th>Item</th><th>Ordered</th><th>Received</th><th>Receive now</th></tr></thead>
+        <thead><tr><th>Item</th><th>Ordered</th><th>Received</th><th>Outstanding</th><th>Receive now</th></tr></thead>
         <tbody>
           {pending.map((i) => (
             <tr key={i.id}>
               <td>{i.description}</td>
               <td>{i.quantity}</td>
               <td>{i.quantityReceived}</td>
+              <td>{i.quantity - i.quantityReceived}</td>
               <td>
                 <input
                   type="number"
@@ -88,7 +113,10 @@ export default function ReceiveGoodsForm({ purchaseOrderId, items }: { purchaseO
           ))}
         </tbody>
       </table>
-      <button type="submit" disabled={saving || !warehouseId} className="btn-primary">{saving ? 'Recording...' : 'Record receipt'}</button>
+      <div className="flex items-center gap-3">
+        <button type="submit" disabled={saving || !warehouseId} className="btn-primary">{saving ? 'Recording...' : 'Record receipt'}</button>
+        {error && <span className="text-sm text-red-600">{error}</span>}
+      </div>
     </form>
   );
 }
