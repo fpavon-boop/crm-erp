@@ -7,6 +7,8 @@ import PageHeader from '@/components/PageHeader';
 import Badge from '@/components/Badge';
 import { money, formatDate, formatDateTime } from '@/lib/format';
 import { AddNoteForm, UploadDocumentForm, DeleteCompanyButton } from './CompanyDetailClient';
+import SendCommunicationForm, { type SendCommunicationTemplateOption } from '@/components/SendCommunicationForm';
+import { TEMPLATE_DEFINITIONS, TEMPLATE_KEYS, renderAllTemplates } from '@/lib/communications/templates';
 import { Pencil, Download } from 'lucide-react';
 
 /**
@@ -27,6 +29,17 @@ export default async function CompanyDetailPage({ params }: { params: { id: stri
     throw err;
   }
   const { company, sections, sales, invoicing, purchasing, tasks, whatsapp, inbox, activity } = data;
+
+  const rendered = renderAllTemplates({ recipientName: company.name });
+  const templateOptions: SendCommunicationTemplateOption[] = TEMPLATE_KEYS.map((key) => {
+    const def = TEMPLATE_DEFINITIONS[key];
+    const channels = def.channels.filter((c) => (c === 'email' ? sections.inbox : sections.whatsapp));
+    return channels.length > 0
+      ? { key, label: def.label, channels, subject: rendered[key].subject, body: rendered[key].body }
+      : null;
+  }).filter((t): t is SendCommunicationTemplateOption => t !== null);
+  const defaultEmail = company.contacts[0]?.email || company.emails[0]?.address || null;
+  const defaultPhone = company.contacts[0]?.phone || company.contacts[0]?.mobile || company.phones[0]?.number || null;
 
   return (
     <div>
@@ -157,15 +170,35 @@ export default async function CompanyDetailPage({ params }: { params: { id: stri
 
           <div className="card p-5">
             <h2 className="font-semibold text-slate-800 mb-3">Communication history</h2>
+            {templateOptions.length > 0 && (
+              <SendCommunicationForm
+                templates={templateOptions}
+                defaultEmail={defaultEmail}
+                defaultPhone={defaultPhone}
+                companyId={company.id}
+                contactId={company.contacts[0]?.id}
+              />
+            )}
             <ul className="text-sm space-y-2 max-h-72 overflow-y-auto">
               {company.communicationLogs.map((log) => (
                 <li key={log.id} className="border-b border-slate-100 pb-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <Badge label={log.type} />
                     <span className="text-xs text-slate-400">{log.direction} · {formatDateTime(log.occurredAt)}</span>
+                    {log.status && <Badge label={log.status} />}
+                    {log.templateKey && <span className="text-xs text-slate-400">via {log.templateKey.replace(/_/g, ' ')}</span>}
+                    {log.relatedType && log.relatedId && (
+                      <span className="text-xs text-slate-400">re: {log.relatedType.replace(/_/g, ' ').toLowerCase()}</span>
+                    )}
                   </div>
                   {log.subject && <p className="font-medium">{log.subject}</p>}
                   {log.body && <p className="text-slate-600 line-clamp-2">{log.body}</p>}
+                  {(log.recipient || log.user?.name || log.direction === 'OUTBOUND') && (
+                    <p className="text-xs text-slate-400">
+                      {log.recipient && <>to {log.recipient} · </>}
+                      {log.user?.name ? `by ${log.user.name}` : log.direction === 'OUTBOUND' ? 'automated' : null}
+                    </p>
+                  )}
                 </li>
               ))}
               {company.communicationLogs.length === 0 && <p className="text-slate-400">No communication history yet.</p>}

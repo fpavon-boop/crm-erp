@@ -240,6 +240,24 @@ model CommunicationLog {
   direction  CommunicationDirection
   subject    String?
   body       String?
+  // The email address or phone number the message actually went to/came
+  // from — distinct from companyId/contactId (a record link), since the
+  // address used may be one of several on file.
+  recipient    String?
+  // Which of the standard message templates (Phase 10,
+  // docs/CUSTOMER_COMMUNICATION.md) produced this message, if any — null
+  // for ad-hoc replies, inbound messages, and anything predating this phase.
+  templateKey  String?
+  // 'SENT' | 'FAILED' for an outbound send attempt this app made; null for
+  // inbound messages and any row predating this phase's audit logging.
+  status       String?
+  // Optional link to the specific business record (a Sales Order, Invoice,
+  // Quote, ...) this communication is about — lets a record's own page show
+  // only the messages relevant to it, the same generic pattern Note and
+  // Document already use. Independent of companyId/contactId, which this
+  // can accompany or stand without.
+  relatedType  RelatedEntityType?
+  relatedId    String?
   companyId  String?
   company    Company?               @relation(fields: [companyId], references: [id], onDelete: Cascade)
   contactId  String?
@@ -250,6 +268,7 @@ model CommunicationLog {
 
   @@index([companyId])
   @@index([contactId])
+  @@index([relatedType, relatedId])
 }
 
 model AuditLog {

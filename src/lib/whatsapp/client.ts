@@ -3,16 +3,42 @@ import { decryptSecret } from '@/lib/crypto';
 
 const GRAPH_VERSION = 'v20.0';
 
-interface SendTextParams {
+/** Optional linking context, common to both send functions — both fields
+ * are optional so the pre-existing ad-hoc "type a number and a message"
+ * send path (POST /api/whatsapp/send) keeps working unchanged; when
+ * neither is given, a matching Contact is looked up by phone number, the
+ * same way the inbound webhook already does. (Audit-log writing itself —
+ * who sent it, which template, which business record — is the caller's
+ * responsibility; see src/lib/communications/send.ts and
+ * src/lib/communications/log.ts, which is the one place that happens, to
+ * avoid this lower-level API client also writing it a second time.) */
+interface SendContext {
+  companyId?: string | null;
+  contactId?: string | null;
+}
+
+interface SendTextParams extends SendContext {
   to: string;
   body: string;
 }
 
-interface SendTemplateParams {
+interface SendTemplateParams extends SendContext {
   to: string;
   templateName: string;
   language?: string;
   components?: unknown[];
+}
+
+/** Resolves companyId/contactId for the CommunicationLog audit entry: uses
+ * whatever the caller already knows, and only falls back to a phone-number
+ * lookup (matching handleInboundWebhook's own matching logic) when the
+ * caller didn't supply one. */
+async function resolveSendContext(to: string, ctx: SendContext): Promise<{ companyId: string | null; contactId: string | null }> {
+  if (ctx.companyId !== undefined || ctx.contactId !== undefined) {
+    return { companyId: ctx.companyId ?? null, contactId: ctx.contactId ?? null };
+  }
+  const contact = await prisma.contact.findFirst({ where: { OR: [{ phone: { contains: to } }, { mobile: { contains: to } }] } });
+  return { companyId: contact?.companyId ?? null, contactId: contact?.id ?? null };
 }
 
 async function getActiveAccount() {
@@ -50,6 +76,7 @@ async function graphFetch(path: string, token: string, init?: RequestInit) {
 export async function sendText(params: SendTextParams) {
   const account = await getActiveAccount();
   const token = accessToken(account);
+  const { companyId, contactId } = await resolveSendContext(params.to, params);
   const result = await graphFetch(`${account.phoneNumberId}/messages`, token, {
     method: 'POST',
     body: JSON.stringify({
@@ -69,6 +96,8 @@ export async function sendText(params: SendTextParams) {
       messageType: 'text',
       body: params.body,
       status: 'SENT',
+      companyId,
+      contactId,
     },
   });
 
@@ -81,6 +110,7 @@ export async function sendText(params: SendTextParams) {
 export async function sendTemplate(params: SendTemplateParams) {
   const account = await getActiveAccount();
   const token = accessToken(account);
+  const { companyId, contactId } = await resolveSendContext(params.to, params);
   const result = await graphFetch(`${account.phoneNumberId}/messages`, token, {
     method: 'POST',
     body: JSON.stringify({
@@ -104,6 +134,8 @@ export async function sendTemplate(params: SendTemplateParams) {
       messageType: 'template',
       templateName: params.templateName,
       status: 'SENT',
+      companyId,
+      contactId,
     },
   });
 

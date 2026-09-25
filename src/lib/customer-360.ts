@@ -180,7 +180,7 @@ async function fetchBaseCompany(companyId: string) {
       owner: true,
       documents: { orderBy: { createdAt: 'desc' } },
       notesList: { orderBy: { createdAt: 'desc' }, include: { author: true } },
-      communicationLogs: { orderBy: { occurredAt: 'desc' }, take: RECORD_LIMIT },
+      communicationLogs: { orderBy: { occurredAt: 'desc' }, take: RECORD_LIMIT, include: { user: { select: { name: true } } } },
     },
   });
 }
