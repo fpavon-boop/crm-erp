@@ -225,8 +225,7 @@ describe('Inventory hardening (Phase 1)', () => {
           status: 'CONFIRMED',
           items: [{ productVariantId: variant.id, description: 'Test brick', quantity: 7, unitPrice: 20, taxRate: 0, discount: 0 }],
         },
-        { subtotal: 140, taxTotal: 0, discountTotal: 0, total: 140 },
-        `SO-CREATE-${Math.random().toString(36).slice(2)}`
+        { subtotal: 140, taxTotal: 0, discountTotal: 0, total: 140 }
       );
 
       expect(await level(variant.id)).toBe(13);

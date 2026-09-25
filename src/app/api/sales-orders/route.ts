@@ -3,7 +3,6 @@ import { prisma } from '@/lib/prisma';
 import { requireApiModule } from '@/lib/api-auth';
 import { salesOrderSchema } from '@/lib/validation';
 import { computeTotals } from '@/lib/totals';
-import { generateNumber } from '@/lib/numbering';
 import { logAudit } from '@/lib/audit';
 import { csvResponse } from '@/lib/csv';
 import { money } from '@/lib/format';
@@ -42,9 +41,8 @@ export async function POST(req: NextRequest) {
 
   const { items, ...rest } = parsed.data;
   const totals = computeTotals(items);
-  const number = await generateNumber('salesOrder');
 
-  const created = await createSalesOrderWithInventoryEffect({ ...rest, items }, totals, number);
+  const created = await createSalesOrderWithInventoryEffect({ ...rest, items }, totals);
   const order = await prisma.salesOrder.findUniqueOrThrow({
     where: { id: created.id },
     include: { items: true },

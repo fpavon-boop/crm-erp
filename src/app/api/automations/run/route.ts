@@ -2,9 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 import { requireCronSecret } from '@/lib/api-auth';
-import { runScheduledAutomations } from '@/lib/automations/engine';
-import { syncEmailAccount } from '@/lib/email/imap';
-import { prisma } from '@/lib/prisma';
+import { runAutomationsTickExclusive } from '@/lib/automations/tick-lock';
 
 export const runtime = 'nodejs';
 export const maxDuration = 300;
@@ -15,6 +13,11 @@ export const maxDuration = 300;
  * Call this periodically from Easypanel's Cron feature (or an external
  * scheduler like cron-job.org) with header `x-cron-secret: $CRON_SECRET`,
  * or trigger it manually from Settings > Automations as an admin.
+ *
+ * Goes through the shared cross-process lease (SYSTEM_AUDIT.md D4) — if
+ * the in-process scheduler or the optional standalone worker is already
+ * mid-tick, this call is a safe, immediate no-op (`ran: false`) rather
+ * than a duplicate run.
  */
 export async function POST(req: NextRequest) {
   const cronError = requireCronSecret(req);
@@ -25,18 +28,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const results = await runScheduledAutomations();
+  const { ranTick, results, emailSync } = await runAutomationsTickExclusive();
 
-  const emailAccounts = await prisma.emailAccount.findMany({ where: { active: true } });
-  const emailSync = [];
-  for (const account of emailAccounts) {
-    try {
-      const result = await syncEmailAccount(account.id);
-      emailSync.push({ account: account.label, ...result });
-    } catch (err) {
-      emailSync.push({ account: account.label, error: String(err) });
-    }
-  }
-
-  return NextResponse.json({ ran: true, results, emailSync });
+  return NextResponse.json({ ran: ranTick, results, emailSync });
 }

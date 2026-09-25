@@ -27,17 +27,19 @@ export async function POST(req: NextRequest) {
 
   const { items, validUntil, ...rest } = parsed.data;
   const totals = computeTotals(items);
-  const number = await generateNumber('quote');
 
-  const quote = await prisma.quote.create({
-    data: {
-      ...rest,
-      number,
-      ...totals,
-      validUntil: validUntil ? new Date(validUntil) : null,
-      items: { create: items },
-    },
-    include: { items: true },
+  const quote = await prisma.$transaction(async (tx) => {
+    const number = await generateNumber('quote', tx);
+    return tx.quote.create({
+      data: {
+        ...rest,
+        number,
+        ...totals,
+        validUntil: validUntil ? new Date(validUntil) : null,
+        items: { create: items },
+      },
+      include: { items: true },
+    });
   });
 
   await logAudit({

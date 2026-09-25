@@ -1007,6 +1007,24 @@ model AutomationLog {
   createdAt   DateTime       @default(now())
 }
 
+// Phase 8: a single-row lease/lock so the in-process scheduler
+// (src/instrumentation-node.ts), the optional standalone worker
+// (src/worker/index.ts), and the manual/Cron-triggered
+// POST /api/automations/run route can never run an automations+email-sync
+// tick at the same time as each other (SYSTEM_AUDIT.md D4) — whichever of
+// the three has none of them currently deployed is a matter of
+// configuration, not something the app can rely on, so the lock protects
+// correctness regardless of which trigger(s) are actually wired up.
+// `lockedAt: null` means free; a non-null `lockedAt` older than the lease
+// window is treated as free too (self-healing if a process crashes
+// mid-tick without releasing it) — see
+// src/lib/automations/tick-lock.ts.
+model ScheduledTickLock {
+  id       String    @id
+  lockedAt DateTime?
+  runId    String?
+}
+
 // =============================================================================
 // WordPress integration
 // =============================================================================

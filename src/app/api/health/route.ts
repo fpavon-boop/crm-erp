@@ -12,12 +12,17 @@ export async function GET() {
       database: 'connected',
     });
   } catch (error) {
+    // This endpoint is unauthenticated by design (needed for uptime
+    // checks), so the failure detail is logged server-side only — the raw
+    // error message (which can include connection strings, internal
+    // hostnames, or driver internals) must never reach a public,
+    // unauthenticated response.
+    console.error('[health] database check failed:', error);
     return NextResponse.json(
       {
         status: 'error',
         timestamp: new Date().toISOString(),
         database: 'unreachable',
-        message: error instanceof Error ? error.message : 'unknown error',
       },
       { status: 503 }
     );

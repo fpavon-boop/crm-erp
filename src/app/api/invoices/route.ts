@@ -49,19 +49,21 @@ export async function POST(req: NextRequest) {
   const { items, dueDate, type, ...rest } = parsed.data;
   const totals = computeTotals(items);
   const kind = type === 'ESTIMATE' ? 'estimate' : type === 'RECEIPT' ? 'receipt' : 'invoice';
-  const number = await generateNumber(kind);
 
-  const invoice = await prisma.invoice.create({
-    data: {
-      ...rest,
-      type,
-      number,
-      ...totals,
-      dueDate: dueDate ? new Date(dueDate) : null,
-      createdById: session.user.id,
-      items: { create: items },
-    },
-    include: { items: true },
+  const invoice = await prisma.$transaction(async (tx) => {
+    const number = await generateNumber(kind, tx);
+    return tx.invoice.create({
+      data: {
+        ...rest,
+        type,
+        number,
+        ...totals,
+        dueDate: dueDate ? new Date(dueDate) : null,
+        createdById: session.user.id,
+        items: { create: items },
+      },
+      include: { items: true },
+    });
   });
 
   await logAudit({

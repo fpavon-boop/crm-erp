@@ -1,6 +1,4 @@
-import { runScheduledAutomations } from '@/lib/automations/engine';
-import { syncEmailAccount } from '@/lib/email/imap';
-import { prisma } from '@/lib/prisma';
+import { runAutomationsTickExclusive } from '@/lib/automations/tick-lock';
 
 export function startScheduler() {
   if (process.env.DISABLE_INTERNAL_SCHEDULER === 'true') return;
@@ -10,15 +8,13 @@ export function startScheduler() {
   if (globalState.__crmSchedulerStarted) return;
   globalState.__crmSchedulerStarted = true;
 
+  // Goes through the shared cross-process lease (SYSTEM_AUDIT.md D4) rather
+  // than running the automations+email-sync work directly — if the
+  // standalone worker or a Cron-triggered call is already mid-tick, this
+  // is a safe, immediate no-op instead of a duplicate run.
   const tick = async () => {
     try {
-      await runScheduledAutomations();
-      const accounts = await prisma.emailAccount.findMany({ where: { active: true } });
-      for (const account of accounts) {
-        await syncEmailAccount(account.id).catch((err) =>
-          console.error(`[scheduler] email sync failed for ${account.label}:`, err)
-        );
-      }
+      await runAutomationsTickExclusive();
     } catch (err) {
       console.error('[scheduler] tick failed:', err);
     }

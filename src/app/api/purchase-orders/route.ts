@@ -25,18 +25,20 @@ export async function POST(req: NextRequest) {
 
   const { items, expectedDate, ...rest } = parsed.data;
   const subtotal = items.reduce((s, i) => s + i.quantity * i.unitCost, 0);
-  const number = await generateNumber('purchaseOrder');
 
-  const order = await prisma.purchaseOrder.create({
-    data: {
-      ...rest,
-      number,
-      subtotal,
-      total: subtotal,
-      expectedDate: expectedDate ? new Date(expectedDate) : null,
-      items: { create: items },
-    },
-    include: { items: true },
+  const order = await prisma.$transaction(async (tx) => {
+    const number = await generateNumber('purchaseOrder', tx);
+    return tx.purchaseOrder.create({
+      data: {
+        ...rest,
+        number,
+        subtotal,
+        total: subtotal,
+        expectedDate: expectedDate ? new Date(expectedDate) : null,
+        items: { create: items },
+      },
+      include: { items: true },
+    });
   });
 
   return NextResponse.json({ order }, { status: 201 });

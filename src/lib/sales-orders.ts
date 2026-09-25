@@ -131,14 +131,18 @@ export interface SalesOrderTotals {
  * initial status (the create form's status field allows this) would never
  * have its inventory effect applied at all, since creation never went
  * through transitionSalesOrderStatus. See docs/INVENTORY_RULES.md.
+ *
+ * The order number is generated *inside* this same transaction
+ * (SYSTEM_AUDIT.md D1) — see generateNumber()'s own doc comment for why
+ * that's required for its race-safety guarantee to actually hold.
  */
 export async function createSalesOrderWithInventoryEffect(
   input: SalesOrderWriteInput,
-  totals: SalesOrderTotals,
-  number: string
+  totals: SalesOrderTotals
 ): Promise<SalesOrder> {
   return prisma.$transaction(async (tx) => {
     const { items, ...rest } = input;
+    const number = await generateNumber('salesOrder', tx);
     const order = await tx.salesOrder.create({
       data: { ...rest, number, ...totals, items: { create: items } },
     });
@@ -280,7 +284,7 @@ export async function createInvoiceForSalesOrder(
     const order = await tx.salesOrder.findUnique({ where: { id: orderId }, include: { items: true } });
     if (!order) throw new SalesOrderNotFoundError(orderId);
 
-    const number = await generateNumber('invoice');
+    const number = await generateNumber('invoice', tx);
     const invoice = await tx.invoice.create({
       data: {
         number,
