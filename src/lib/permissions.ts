@@ -22,6 +22,7 @@ export const MODULES = [
   'automations',
   'settings',
   'users',
+  'ai',
 ] as const;
 
 export type Module = (typeof MODULES)[number];
@@ -40,6 +41,7 @@ const MATRIX: Record<Role, Module[]> = {
     'inbox',
     'whatsapp',
     'wordpress',
+    'ai',
   ],
   OPERATIONS: [
     'dashboard',
@@ -54,6 +56,7 @@ const MATRIX: Record<Role, Module[]> = {
     'inbox',
     'whatsapp',
     'wordpress',
+    'ai',
   ],
   ACCOUNTING: [
     'dashboard',
@@ -65,6 +68,7 @@ const MATRIX: Record<Role, Module[]> = {
     'tasks',
     'calendar',
     'inbox',
+    'ai',
   ],
 };
 

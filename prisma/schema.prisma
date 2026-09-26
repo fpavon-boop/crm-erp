@@ -42,6 +42,7 @@ model User {
   employee         Employee?
   automationRules  AutomationRule[]
   invoicesCreated  Invoice[]
+  aiGenerationLogs AiGenerationLog[]
 }
 
 model Employee {
@@ -116,6 +117,7 @@ model Company {
   whatsappMessages WhatsAppMessage[]
   wordpressLeads WordPressLead[]
   auditLogs   AuditLog[]
+  aiGenerationLogs AiGenerationLog[]
 
   @@index([type])
   @@unique([externalSource, externalId])
@@ -285,6 +287,40 @@ model AuditLog {
 
   @@index([entityType, entityId])
   @@index([createdAt])
+}
+
+// Phase 14 (AI-Assisted Features, docs/AI_FEATURES.md): every AI generation
+// call — whether it succeeded or failed — is logged here for admin
+// visibility, separate from AuditLog since an AI call never itself writes
+// or changes business data (it's a read + a suggestion, never a mutation)
+// and this table's shape (feature, model, success/failure) is purpose-built
+// rather than shoehorned into AuditLog's generic `changes` JSON blob.
+enum AiFeature {
+  CUSTOMER_SUMMARY
+  SALES_SUMMARY
+  EMAIL_DRAFT
+  FOLLOWUP_SUGGESTIONS
+  PRODUCT_ANALYSIS
+  INVENTORY_WARNING
+  INVOICE_SUMMARY
+}
+
+model AiGenerationLog {
+  id            String    @id @default(cuid())
+  feature       AiFeature
+  entityType    String?
+  entityId      String?
+  requestedById String?
+  requestedBy   User?     @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+  companyId     String?
+  company       Company?  @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  model         String?
+  status        String
+  errorMessage  String?
+  createdAt     DateTime  @default(now())
+
+  @@index([feature, createdAt])
+  @@index([entityType, entityId])
 }
 
 // =============================================================================

@@ -8,6 +8,7 @@ import Badge from '@/components/Badge';
 import { money, formatDate, formatDateTime } from '@/lib/format';
 import { AddNoteForm, UploadDocumentForm, DeleteCompanyButton } from './CompanyDetailClient';
 import SendCommunicationForm, { type SendCommunicationTemplateOption } from '@/components/SendCommunicationForm';
+import AiSummaryCard from '@/components/ai/AiSummaryCard';
 import { TEMPLATE_DEFINITIONS, TEMPLATE_KEYS, renderAllTemplates } from '@/lib/communications/templates';
 import { Pencil, Download } from 'lucide-react';
 
@@ -72,6 +73,12 @@ export default async function CompanyDetailPage({ params }: { params: { id: stri
               <Row label="Owner">{company.owner?.name || 'Unassigned'}</Row>
             </dl>
           </div>
+
+          <AiSummaryCard title="AI Customer Summary" endpoint="/api/ai/customer-summary" payload={{ companyId: company.id }} />
+          <AiSummaryCard title="AI Follow-Up Suggestions" endpoint="/api/ai/follow-up-suggestions" payload={{ companyId: company.id }} />
+          {sections.invoicing && (
+            <AiSummaryCard title="AI Invoice / Account Summary" endpoint="/api/ai/invoice-summary" payload={{ companyId: company.id }} />
+          )}
 
           <div className="card p-5">
             <h2 className="font-semibold text-slate-800 mb-3">Address</h2>

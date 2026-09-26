@@ -6,6 +6,8 @@ import PageHeader from '@/components/PageHeader';
 import Badge from '@/components/Badge';
 import { money, formatDateTime } from '@/lib/format';
 import AdjustStockForm from './AdjustStockForm';
+import AiSummaryCard from '@/components/ai/AiSummaryCard';
+import AiInventoryWarningButton from '@/components/ai/AiInventoryWarningButton';
 import { Pencil } from 'lucide-react';
 
 export default async function ProductDetailPage({ params }: { params: { id: string } }) {
@@ -56,22 +58,28 @@ export default async function ProductDetailPage({ params }: { params: { id: stri
         </div>
       </div>
 
-      <div className="card p-5 mb-6">
+      <AiSummaryCard title="AI Product Sales Analysis" endpoint="/api/ai/product-analysis" payload={{ productId: product.id }} />
+
+      <div className="card p-5 mb-6 mt-6">
         <h2 className="font-semibold text-slate-800 mb-3">Stock by warehouse</h2>
         <table className="table-base">
-          <thead><tr><th>Variant</th><th>Warehouse</th><th>Quantity</th></tr></thead>
+          <thead><tr><th>Variant</th><th>Warehouse</th><th>Quantity</th><th></th></tr></thead>
           <tbody>
             {product.variants.flatMap((v) =>
-              v.stockLevels.map((l) => (
-                <tr key={l.id}>
-                  <td>{v.name} <span className="text-xs text-slate-400">({v.sku})</span></td>
-                  <td>{l.warehouse.name}</td>
-                  <td className={l.quantity <= product.reorderPoint ? 'text-red-600 font-semibold' : ''}>{l.quantity}</td>
-                </tr>
-              ))
+              v.stockLevels.map((l) => {
+                const isLow = l.quantity <= product.reorderPoint;
+                return (
+                  <tr key={l.id}>
+                    <td>{v.name} <span className="text-xs text-slate-400">({v.sku})</span></td>
+                    <td>{l.warehouse.name}</td>
+                    <td className={isLow ? 'text-red-600 font-semibold' : ''}>{l.quantity}</td>
+                    <td>{isLow && <AiInventoryWarningButton productVariantId={v.id} warehouseId={l.warehouseId} />}</td>
+                  </tr>
+                );
+              })
             )}
             {product.variants.every((v) => v.stockLevels.length === 0) && (
-              <tr><td colSpan={3} className="text-center text-slate-500 py-6">No stock recorded yet.</td></tr>
+              <tr><td colSpan={4} className="text-center text-slate-500 py-6">No stock recorded yet.</td></tr>
             )}
           </tbody>
         </table>

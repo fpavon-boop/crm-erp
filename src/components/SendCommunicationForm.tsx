@@ -50,6 +50,9 @@ export default function SendCommunicationForm({
   const [body, setBody] = useState(first?.body ?? '');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ sent: boolean; reason?: string } | null>(null);
+  const [aiIntent, setAiIntent] = useState<'follow_up' | 'confirmation' | 'quote'>('follow_up');
+  const [aiDrafting, setAiDrafting] = useState(false);
+  const [aiNotice, setAiNotice] = useState<string | null>(null);
   // Phase 13: one key per "compose" — stable across a retry of the same
   // click (so a genuine network retry can't send twice), regenerated once
   // the request settles so a deliberate later click for the next message
@@ -106,6 +109,51 @@ export default function SendCommunicationForm({
     }
   }
 
+  /**
+   * "Draft with AI" (docs/AI_FEATURES.md "Email Draft Assistant"): fills
+   * the same editable subject/body state a template would, grounded in
+   * this company's actual communication timeline — never sent directly,
+   * exactly like picking a template. A failed/unconfigured AI call shows
+   * a notice and leaves whatever the user already had typed untouched.
+   */
+  async function draftWithAi() {
+    if (!companyId) return;
+    setAiDrafting(true);
+    setAiNotice(null);
+    try {
+      const res = await fetch('/api/ai/email-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companyId,
+          contactId: contactId || undefined,
+          intent: aiIntent,
+          relatedType: linkTarget?.relatedType,
+          relatedId: linkTarget?.relatedId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAiNotice('Could not generate an AI draft.');
+        return;
+      }
+      if (!data.aiAvailable) {
+        setAiNotice('AI draft is unavailable right now — write the message manually.');
+        return;
+      }
+      setTemplateKey('');
+      setChannel('email');
+      setSubject(data.subject || '');
+      setBody(data.body || '');
+      if (!to.trim() && data.recipientEmail) setTo(data.recipientEmail);
+      setAiNotice('Drafted by AI — review and edit before sending.');
+    } catch {
+      setAiNotice('Could not generate an AI draft.');
+    } finally {
+      setAiDrafting(false);
+    }
+  }
+
   if (templates.length === 0) return null;
 
   return (
@@ -131,6 +179,24 @@ export default function SendCommunicationForm({
           <input className="input w-full" value={to} onChange={(e) => setTo(e.target.value)} placeholder={channel === 'email' ? 'customer@example.com' : '+1 555 123 4567'} />
         </div>
       </div>
+
+      {companyId && (
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            className="input !py-1 !text-xs w-auto"
+            value={aiIntent}
+            onChange={(e) => setAiIntent(e.target.value as typeof aiIntent)}
+          >
+            <option value="follow_up">Follow-up</option>
+            <option value="confirmation">Confirmation</option>
+            <option value="quote">Quote</option>
+          </select>
+          <button type="button" className="btn-secondary !py-1 !text-xs" onClick={draftWithAi} disabled={aiDrafting}>
+            {aiDrafting ? 'Drafting...' : 'Draft with AI'}
+          </button>
+          {aiNotice && <span className="text-xs text-slate-500">{aiNotice}</span>}
+        </div>
+      )}
 
       {channel === 'email' && (
         <div>

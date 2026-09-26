@@ -3,6 +3,7 @@ import type { Role } from '@prisma/client';
 import { requireModule } from '@/lib/session';
 import PageHeader from '@/components/PageHeader';
 import Badge from '@/components/Badge';
+import AiSummaryCard from '@/components/ai/AiSummaryCard';
 import { money, formatDate, formatDateTime } from '@/lib/format';
 import {
   getDashboardData,
@@ -166,6 +167,10 @@ export default async function DashboardPage({ searchParams }: { searchParams: Da
         <button type="submit" className="btn-primary">Apply</button>
         {hasActiveFilters && <Link href="/dashboard" className="btn-secondary">Clear</Link>}
       </form>
+
+      <div className="mb-6">
+        <AiSummaryCard title="AI Sales Summary" endpoint="/api/ai/sales-summary" payload={{}} />
+      </div>
 
       <p className="text-xs text-slate-400 mb-2">Sales figures below</p>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
