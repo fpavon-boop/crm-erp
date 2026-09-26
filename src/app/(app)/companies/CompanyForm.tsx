@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { newIdempotencyKey } from '@/lib/idempotency-client';
 
 interface CompanyFormValues {
   id?: string;
@@ -50,9 +51,15 @@ export default function CompanyForm({ initial }: { initial?: Partial<CompanyForm
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [duplicates, setDuplicates] = useState<DuplicateCompanyMatch[] | null>(null);
+  // Phase 13: stable across a "Create anyway" retry of the same submission
+  // (so a network retry / double-click can't create the record twice),
+  // regenerated whenever the user actually edits a field (a genuinely
+  // different submission). Not used at all on an edit (values.id set).
+  const idempotencyKeyRef = useRef(newIdempotencyKey());
 
   function set<K extends keyof CompanyFormValues>(key: K, value: CompanyFormValues[K]) {
     setValues((v) => ({ ...v, [key]: value }));
+    idempotencyKeyRef.current = newIdempotencyKey();
     setDuplicates(null); // editing after seeing a warning re-opens the question
   }
 
@@ -76,6 +83,7 @@ export default function CompanyForm({ initial }: { initial?: Partial<CompanyForm
       phones: values.phone ? [{ label: 'main', number: values.phone }] : [],
       emails: values.email ? [{ label: 'main', address: values.email }] : [],
       ...(confirmDuplicate ? { confirmDuplicate: true } : {}),
+      ...(values.id ? {} : { idempotencyKey: idempotencyKeyRef.current }),
     };
 
     const res = await fetch(values.id ? `/api/companies/${values.id}` : '/api/companies', {

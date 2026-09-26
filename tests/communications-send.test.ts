@@ -195,6 +195,110 @@ describe('Customer communication — send + audit log', () => {
     });
   });
 
+  describe('Phase 13: idempotency keys make duplicate customer messages impossible', () => {
+    it('sendCommunication called twice with the SAME idempotencyKey sends only once — the underlying sender is invoked exactly one time', async () => {
+      const { company, contact } = await makeCompanyWithContact();
+      let sendCount = 0;
+      const emailSender = async () => {
+        sendCount += 1;
+        return { sent: true };
+      };
+      const idempotencyKey = `idem-${id()}`;
+      const input = {
+        channel: 'email' as const,
+        to: contact.email!,
+        subject: 'Order confirmation',
+        body: 'Your order has been confirmed.',
+        templateKey: 'order_confirmation',
+        companyId: company.id,
+        contactId: contact.id,
+        idempotencyKey,
+      };
+
+      const first = await sendCommunication(input, { emailSender });
+      const second = await sendCommunication(input, { emailSender });
+
+      expect(sendCount).toBe(1);
+      expect(first.sent).toBe(true);
+      expect(second.sent).toBe(true);
+      expect(second.communicationLogId).toBe(first.communicationLogId); // same underlying send, not a new one
+      const logs = await db.prisma.communicationLog.count({ where: { recipient: contact.email! } });
+      expect(logs).toBe(1);
+    });
+
+    it('sendCommunication with no idempotencyKey (backward-compatible default) sends every time, unchanged behavior', async () => {
+      const { contact } = await makeCompanyWithContact();
+      let sendCount = 0;
+      const emailSender = async () => {
+        sendCount += 1;
+        return { sent: true };
+      };
+      const input = { channel: 'email' as const, to: contact.email!, subject: 'x', body: 'x' };
+      await sendCommunication(input, { emailSender });
+      await sendCommunication(input, { emailSender });
+      expect(sendCount).toBe(2);
+    });
+
+    it('two DIFFERENT idempotencyKeys for the same recipient both send — the key, not the recipient, is the identity', async () => {
+      const { contact } = await makeCompanyWithContact();
+      let sendCount = 0;
+      const emailSender = async () => {
+        sendCount += 1;
+        return { sent: true };
+      };
+      await sendCommunication(
+        { channel: 'email', to: contact.email!, subject: 'x', body: 'x', idempotencyKey: `idem-${id()}` },
+        { emailSender }
+      );
+      await sendCommunication(
+        { channel: 'email', to: contact.email!, subject: 'x', body: 'x', idempotencyKey: `idem-${id()}` },
+        { emailSender }
+      );
+      expect(sendCount).toBe(2);
+    });
+
+    it('sendOrderConfirmation called twice for the SAME order sends only once — a duplicate scheduler tick can never double-confirm an order', async () => {
+      const { company, contact } = await makeCompanyWithContact();
+      const order = await db.prisma.salesOrder.create({
+        data: {
+          number: `SO-${id()}`,
+          status: 'CONFIRMED',
+          companyId: company.id,
+          contactId: contact.id,
+          items: { create: [{ description: 'x', quantity: 1, unitPrice: 10 }] },
+        },
+      });
+
+      await notifications.sendOrderConfirmation(order.id);
+      await notifications.sendOrderConfirmation(order.id);
+
+      const logs = await db.prisma.communicationLog.findMany({ where: { relatedType: 'SALES_ORDER', relatedId: order.id } });
+      expect(logs).toHaveLength(1);
+    });
+
+    it('sendPaymentReminder called twice for the SAME invoice on the SAME day sends only once (day-bucketed key)', async () => {
+      const { company, contact } = await makeCompanyWithContact();
+      const invoice = await db.prisma.invoice.create({
+        data: {
+          number: `INV-${id()}`,
+          type: 'INVOICE',
+          status: 'OVERDUE',
+          companyId: company.id,
+          contactId: contact.id,
+          subtotal: 100,
+          total: 100,
+          dueDate: new Date(Date.now() - 86_400_000),
+        },
+      });
+
+      await notifications.sendPaymentReminder(invoice.id);
+      await notifications.sendPaymentReminder(invoice.id);
+
+      const logs = await db.prisma.communicationLog.findMany({ where: { relatedType: 'INVOICE', relatedId: invoice.id } });
+      expect(logs).toHaveLength(1);
+    });
+  });
+
   describe('role-based permissions for sending', () => {
     it('email sending requires the inbox module; whatsapp sending requires the whatsapp module — matching every other channel action in this app', () => {
       expect(canAccess('ADMIN', 'inbox')).toBe(true);

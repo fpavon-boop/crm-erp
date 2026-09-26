@@ -3,6 +3,7 @@ import { prisma } from '@/lib/prisma';
 import { sendSystemEmail } from '@/lib/email/smtp';
 import { renderInvoicePdf } from '@/lib/pdf';
 import { recordCommunication } from '@/lib/communications/log';
+import { claimIdempotencyKey, recordIdempotentResult } from '@/lib/automations/idempotency';
 
 function recipientEmail(invoiceOrOrder: {
   contact?: { email: string | null } | null;
@@ -22,6 +23,14 @@ function recipientEmail(invoiceOrOrder: {
  * SYSTEM_AUDIT.md C3 already flagged for the WhatsApp webhook. Every
  * automated notification sender in this file goes through this one
  * function so that guarantee only has to be true in one place.
+ *
+ * `idempotencyKey` (Phase 13): when given, claims it via the shared
+ * IdempotencyKey table *before* sending anything — a second call with the
+ * same key (e.g. two overlapping automation ticks that somehow both
+ * process the same entity) finds the claim already taken and returns the
+ * first call's actual outcome instead of sending a second, duplicate
+ * customer message. Callers that pass no key (sendInvoiceByEmail — a
+ * deliberately repeatable "re-send" action) are unaffected.
  */
 async function sendAndRecord(opts: {
   to: string;
@@ -33,14 +42,27 @@ async function sendAndRecord(opts: {
   contactId: string | null;
   relatedType: RelatedEntityType;
   relatedId: string;
+  idempotencyKey?: string;
 }): Promise<{ sent: boolean; reason?: string }> {
+  if (opts.idempotencyKey) {
+    const claim = await claimIdempotencyKey(opts.idempotencyKey, 'automated_notification');
+    if (!claim.claimed) {
+      const priorLog = claim.existingResultRef
+        ? await prisma.communicationLog.findUnique({ where: { id: claim.existingResultRef } })
+        : null;
+      return priorLog
+        ? { sent: priorLog.status === 'SENT', reason: priorLog.status === 'SENT' ? undefined : 'Already attempted (idempotent no-op)' }
+        : { sent: false, reason: 'Already attempted (idempotent no-op)' };
+    }
+  }
+
   let result: { sent: boolean; reason?: string };
   try {
     result = await sendSystemEmail({ to: opts.to, subject: opts.subject, html: opts.html, attachments: opts.attachments });
   } catch (err) {
     result = { sent: false, reason: err instanceof Error ? err.message : String(err) };
   }
-  await recordCommunication({
+  const log = await recordCommunication({
     type: 'EMAIL',
     subject: opts.subject,
     body: opts.html,
@@ -52,6 +74,7 @@ async function sendAndRecord(opts: {
     relatedType: opts.relatedType,
     relatedId: opts.relatedId,
   });
+  if (opts.idempotencyKey) await recordIdempotentResult(opts.idempotencyKey, log.id);
   return result;
 }
 
@@ -113,6 +136,12 @@ export async function sendPaymentReminder(invoiceId: string) {
   const balance = Number(invoice.total) - Number(invoice.amountPaid);
   const subject = `Payment reminder: Invoice ${invoice.number}`;
   const html = `<p>Hello,</p><p>This is a friendly reminder that invoice <b>${invoice.number}</b> for <b>$${balance.toFixed(2)}</b> was due on ${invoice.dueDate?.toDateString() || 'the agreed date'} and is still unpaid.</p><p>Please arrange payment at your earliest convenience.</p>`;
+  // Day-bucketed (Phase 13): at most one reminder attempt per invoice per
+  // calendar day, hard-enforced at the database level — a stricter,
+  // concurrency-safe backstop underneath Phase 11's 7-day soft cooldown
+  // (which reads CommunicationLog after the fact; this claims a row
+  // before sending, so two overlapping calls can never both win).
+  const dayBucket = new Date().toISOString().slice(0, 10);
   return sendAndRecord({
     to,
     subject,
@@ -122,6 +151,7 @@ export async function sendPaymentReminder(invoiceId: string) {
     contactId: invoice.contactId,
     relatedType: 'INVOICE',
     relatedId: invoice.id,
+    idempotencyKey: `payment_reminder:invoice:${invoice.id}:${dayBucket}`,
   });
 }
 
@@ -148,5 +178,9 @@ export async function sendOrderConfirmation(salesOrderId: string) {
     contactId: order.contactId,
     relatedType: 'SALES_ORDER',
     relatedId: order.id,
+    // Phase 13: once per order, ever — an order is only ever confirmed
+    // once, so unlike payment_reminder there is no legitimate reason for
+    // a second confirmation email for the same order.
+    idempotencyKey: `order_confirmation:sales_order:${order.id}`,
   });
 }

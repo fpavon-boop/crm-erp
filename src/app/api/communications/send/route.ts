@@ -30,6 +30,10 @@ const schema = z.object({
   contactId: z.string().optional(),
   relatedType: z.enum(RELATED_TYPES).optional(),
   relatedId: z.string().optional(),
+  // Phase 13: one crypto.randomUUID() generated client-side per compose of
+  // the form, resent verbatim on any retry — see
+  // src/lib/communications/send.ts.
+  idempotencyKey: z.string().min(1).max(200).optional(),
 });
 
 /**
@@ -60,6 +64,7 @@ export async function POST(req: NextRequest) {
     relatedType: parsed.data.relatedType,
     relatedId: parsed.data.relatedId,
     userId: session.user.id,
+    idempotencyKey: parsed.data.idempotencyKey,
   });
 
   // Never echo back anything beyond the outcome — no account/credential

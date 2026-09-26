@@ -2,6 +2,7 @@ import { prisma } from '@/lib/prisma';
 import { sendPaymentReminder } from '@/lib/automations/notifications';
 import { sendTemplate as sendWhatsAppTemplate } from '@/lib/whatsapp/client';
 import { deriveInvoiceStatus } from '@/lib/accounts-receivable';
+import { runAutomationJob } from '@/lib/automations/job-run';
 import type { AutomationRule } from '@prisma/client';
 
 const UNANSWERED_EMAIL_HOURS = 24;
@@ -232,7 +233,18 @@ async function runRulesForTrigger(trigger: AutomationRule['trigger'], context: R
   }
 }
 
-export async function runScheduledAutomations() {
+/**
+ * Runs the four built-in scheduled checks, each through the standardized
+ * job-execution contract (Phase 13, docs/AUTOMATION_SYSTEM.md): a
+ * PENDING→RUNNING→COMPLETED/FAILED AutomationJobRun row per check, with
+ * the error message *and stack trace* captured on failure — never
+ * swallowed to a boolean the way the old inline try/catch did. `trigger`
+ * identifies what caused this tick (all real callers currently go through
+ * the same runAutomationsTickExclusive()-guarded path, so today this is
+ * always 'SCHEDULER_TICK', but the field exists for whatever calls this
+ * next).
+ */
+export async function runScheduledAutomations(trigger: string = 'SCHEDULER_TICK') {
   const results = {
     overdueInvoices: 0,
     pendingOrders: 0,
@@ -240,29 +252,17 @@ export async function runScheduledAutomations() {
     unansweredEmails: 0,
   };
 
-  try {
-    results.overdueInvoices = await checkOverdueInvoices();
-  } catch (err) {
-    await logResult(null, 'SYSTEM', 'overdue-invoices', false, String(err));
-  }
+  const overdue = await runAutomationJob({ jobKey: 'overdue_invoices', trigger, action: 'flag_overdue_and_remind' }, checkOverdueInvoices);
+  if (overdue.status === 'COMPLETED') results.overdueInvoices = overdue.result ?? 0;
 
-  try {
-    results.pendingOrders = await checkPendingOrders();
-  } catch (err) {
-    await logResult(null, 'SYSTEM', 'pending-orders', false, String(err));
-  }
+  const pending = await runAutomationJob({ jobKey: 'pending_orders', trigger, action: 'flag_pending_orders' }, checkPendingOrders);
+  if (pending.status === 'COMPLETED') results.pendingOrders = pending.result ?? 0;
 
-  try {
-    results.lowStock = await checkLowStock();
-  } catch (err) {
-    await logResult(null, 'SYSTEM', 'low-stock', false, String(err));
-  }
+  const lowStock = await runAutomationJob({ jobKey: 'low_stock', trigger, action: 'flag_low_stock' }, checkLowStock);
+  if (lowStock.status === 'COMPLETED') results.lowStock = lowStock.result ?? 0;
 
-  try {
-    results.unansweredEmails = await checkUnansweredEmails();
-  } catch (err) {
-    await logResult(null, 'SYSTEM', 'unanswered-emails', false, String(err));
-  }
+  const unanswered = await runAutomationJob({ jobKey: 'unanswered_emails', trigger, action: 'flag_unanswered_emails' }, checkUnansweredEmails);
+  if (unanswered.status === 'COMPLETED') results.unansweredEmails = unanswered.result ?? 0;
 
   return results;
 }

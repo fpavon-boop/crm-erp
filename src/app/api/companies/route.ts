@@ -5,6 +5,7 @@ import { companySchema } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { csvResponse } from '@/lib/csv';
 import { findPossibleDuplicateCompanies } from '@/lib/duplicate-detection';
+import { claimIdempotencyKey, recordIdempotentResult } from '@/lib/automations/idempotency';
 
 export async function GET(req: NextRequest) {
   const session = await requireApiModule('companies');
@@ -58,6 +59,19 @@ export async function POST(req: NextRequest) {
   }
   const { phones, emails, ...data } = parsed.data;
 
+  // Phase 13: a retry of the exact same submission (network retry,
+  // double-click) is a different concern from the duplicate-*name*
+  // warning below — this is "did I already handle this exact request,"
+  // checked first so a retry never re-triggers that warning either.
+  const idempotencyKey: string | undefined = typeof body?.idempotencyKey === 'string' ? body.idempotencyKey : undefined;
+  if (idempotencyKey) {
+    const claim = await claimIdempotencyKey(idempotencyKey, 'create_company');
+    if (!claim.claimed) {
+      const existing = claim.existingResultRef ? await prisma.company.findUnique({ where: { id: claim.existingResultRef } }) : null;
+      return NextResponse.json({ company: existing, duplicate: true }, { status: existing ? 200 : 201 });
+    }
+  }
+
   // A possible-duplicate warning, not a hard block — see
   // src/lib/duplicate-detection.ts. `confirmDuplicate: true` (sent when
   // the user clicks "Create anyway" on the warning) skips this check.
@@ -75,6 +89,7 @@ export async function POST(req: NextRequest) {
       emails: emails?.length ? { create: emails } : undefined,
     },
   });
+  if (idempotencyKey) await recordIdempotentResult(idempotencyKey, company.id);
 
   await logAudit({
     userId: session.user.id,

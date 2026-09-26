@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { TemplateChannel, TemplateKey } from '@/lib/communications/templates';
+import { newIdempotencyKey } from '@/lib/idempotency-client';
 
 export interface SendCommunicationTemplateOption {
   key: TemplateKey;
@@ -49,6 +50,11 @@ export default function SendCommunicationForm({
   const [body, setBody] = useState(first?.body ?? '');
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<{ sent: boolean; reason?: string } | null>(null);
+  // Phase 13: one key per "compose" — stable across a retry of the same
+  // click (so a genuine network retry can't send twice), regenerated once
+  // the request settles so a deliberate later click for the next message
+  // isn't itself deduped. See src/lib/communications/send.ts.
+  const idempotencyKeyRef = useRef(newIdempotencyKey());
 
   const selected = templates.find((t) => t.key === templateKey);
   const availableChannels = selected?.channels ?? ['email'];
@@ -88,6 +94,7 @@ export default function SendCommunicationForm({
           contactId: contactId || undefined,
           relatedType: linkTarget?.relatedType,
           relatedId: linkTarget?.relatedId,
+          idempotencyKey: idempotencyKeyRef.current,
         }),
       });
       const data = await res.json();
@@ -95,6 +102,7 @@ export default function SendCommunicationForm({
       if (data.sent) router.refresh();
     } finally {
       setSending(false);
+      idempotencyKeyRef.current = newIdempotencyKey();
     }
   }
 

@@ -1050,6 +1050,61 @@ model AutomationLog {
   createdAt   DateTime       @default(now())
 }
 
+// Phase 13 (automation system hardening): the standardized execution
+// contract every built-in scheduled job (and the WooCommerce sync) now
+// runs through — one row per job invocation, not per sub-event the way
+// AutomationLog already is. Kept alongside AutomationLog rather than
+// replacing it: AutomationLog's existing per-item call sites (WooCommerce
+// sync warnings, the WhatsApp webhook's per-message failures) stay as they
+// are, granular within one job run; this table is the coarser, job-level
+// record — did this whole invocation start, run, finish, or fail, and
+// why. See docs/AUTOMATION_SYSTEM.md.
+enum AutomationJobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  RETRYING
+}
+
+model AutomationJobRun {
+  id           String              @id @default(cuid())
+  jobKey       String
+  trigger      String
+  conditions   Json?
+  action       String?
+  status       AutomationJobStatus @default(PENDING)
+  entityType   String?
+  entityId     String?
+  attempt      Int                 @default(1)
+  maxAttempts  Int                 @default(1)
+  errorMessage String?
+  errorStack   String?
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime            @default(now())
+
+  @@index([jobKey, status])
+  @@index([status, createdAt])
+}
+
+// Phase 13 (automation system hardening): the one shared idempotency
+// primitive every "don't do this twice" call site claims a row from
+// before acting — the exact same create()-races-on-a-unique-column
+// pattern already established in src/lib/automations/tick-lock.ts, generalized
+// to any caller instead of one hardcoded lock row. `resultRef` lets a
+// retried caller look up and return the original outcome (e.g. a
+// CommunicationLog id) instead of re-doing the side effect. See
+// src/lib/automations/idempotency.ts and docs/AUTOMATION_SYSTEM.md.
+model IdempotencyKey {
+  key       String   @id
+  scope     String
+  resultRef String?
+  createdAt DateTime @default(now())
+
+  @@index([scope])
+}
+
 // Phase 8: a single-row lease/lock so the in-process scheduler
 // (src/instrumentation-node.ts), the optional standalone worker
 // (src/worker/index.ts), and the manual/Cron-triggered

@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { newIdempotencyKey } from '@/lib/idempotency-client';
 
 interface Company {
   id: string;
@@ -45,6 +46,10 @@ export default function ContactForm({ initial }: { initial?: Partial<ContactForm
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [duplicates, setDuplicates] = useState<DuplicateContactMatch[] | null>(null);
+  // Phase 13: see the matching comment in CompanyForm.tsx — stable across
+  // a "Create anyway" retry, regenerated on an actual field edit, unused
+  // on an edit of an existing contact.
+  const idempotencyKeyRef = useRef(newIdempotencyKey());
 
   useEffect(() => {
     fetch('/api/companies')
@@ -55,6 +60,7 @@ export default function ContactForm({ initial }: { initial?: Partial<ContactForm
   function set<K extends keyof ContactFormValues>(key: K, value: ContactFormValues[K]) {
     setValues((v) => ({ ...v, [key]: value }));
     setDuplicates(null); // editing after seeing a warning re-opens the question
+    idempotencyKeyRef.current = newIdempotencyKey();
   }
 
   async function submit(confirmDuplicate: boolean) {
@@ -71,6 +77,7 @@ export default function ContactForm({ initial }: { initial?: Partial<ContactForm
       companyId: values.companyId || null,
       notes: values.notes || null,
       ...(confirmDuplicate ? { confirmDuplicate: true } : {}),
+      ...(values.id ? {} : { idempotencyKey: idempotencyKeyRef.current }),
     };
 
     const res = await fetch(values.id ? `/api/contacts/${values.id}` : '/api/contacts', {

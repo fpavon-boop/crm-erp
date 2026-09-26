@@ -1,6 +1,8 @@
 import type { RelatedEntityType } from '@prisma/client';
+import { prisma } from '@/lib/prisma';
 import { sendSystemEmail } from '@/lib/email/smtp';
 import { sendText } from '@/lib/whatsapp/client';
+import { claimIdempotencyKey, recordIdempotentResult } from '@/lib/automations/idempotency';
 import { recordCommunication } from './log';
 import { textToHtml } from './templates';
 
@@ -20,6 +22,14 @@ export interface SendCommunicationInput {
   relatedType?: RelatedEntityType | null;
   relatedId?: string | null;
   userId?: string | null;
+  /** Phase 13: a client-generated key (one crypto.randomUUID() per compose
+   * of the form, resent verbatim on any retry of the same click) — a
+   * network retry or a double-click resubmitting the exact same draft
+   * finds the key already claimed and gets back the original send's
+   * outcome instead of sending the message a second time. Optional only
+   * for backward compatibility with any caller that predates this; the
+   * UI always supplies one. */
+  idempotencyKey?: string | null;
 }
 
 export interface SendCommunicationResult {
@@ -49,6 +59,22 @@ export async function sendCommunication(
   input: SendCommunicationInput,
   deps: { emailSender?: EmailSender; whatsappSender?: WhatsAppSender } = {}
 ): Promise<SendCommunicationResult> {
+  if (input.idempotencyKey) {
+    const claim = await claimIdempotencyKey(input.idempotencyKey, 'communication_send');
+    if (!claim.claimed) {
+      const priorLog = claim.existingResultRef
+        ? await prisma.communicationLog.findUnique({ where: { id: claim.existingResultRef } })
+        : null;
+      if (priorLog) {
+        return { sent: priorLog.status === 'SENT', reason: priorLog.status === 'SENT' ? undefined : 'Already sent (idempotent no-op)', communicationLogId: priorLog.id };
+      }
+      // The winning call hasn't finished recording its result yet (a very
+      // tight race) — there is nothing to safely do but say so rather than
+      // send a second time or fabricate a communicationLogId.
+      return { sent: false, reason: 'A send with this key is already in progress', communicationLogId: '' };
+    }
+  }
+
   const emailSender = deps.emailSender ?? sendSystemEmail;
   const whatsappSender = deps.whatsappSender ?? sendText;
 
@@ -92,6 +118,7 @@ export async function sendCommunication(
     relatedId: input.relatedId ?? null,
     userId: input.userId ?? null,
   });
+  if (input.idempotencyKey) await recordIdempotentResult(input.idempotencyKey, log.id);
 
   return { sent, reason, communicationLogId: log.id };
 }

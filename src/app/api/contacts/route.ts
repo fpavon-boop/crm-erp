@@ -5,6 +5,7 @@ import { contactSchema } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { csvResponse } from '@/lib/csv';
 import { findPossibleDuplicateContacts } from '@/lib/duplicate-detection';
+import { claimIdempotencyKey, recordIdempotentResult } from '@/lib/automations/idempotency';
 
 export async function GET(req: NextRequest) {
   const session = await requireApiModule('contacts');
@@ -58,6 +59,18 @@ export async function POST(req: NextRequest) {
   const parsed = contactSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
 
+  // Phase 13: a retry of the exact same submission is a different concern
+  // from the duplicate-name/email warning below — checked first so a
+  // retry never re-triggers that warning either.
+  const idempotencyKey: string | undefined = typeof body?.idempotencyKey === 'string' ? body.idempotencyKey : undefined;
+  if (idempotencyKey) {
+    const claim = await claimIdempotencyKey(idempotencyKey, 'create_contact');
+    if (!claim.claimed) {
+      const existing = claim.existingResultRef ? await prisma.contact.findUnique({ where: { id: claim.existingResultRef } }) : null;
+      return NextResponse.json({ contact: existing, duplicate: true }, { status: existing ? 200 : 201 });
+    }
+  }
+
   // A possible-duplicate warning, not a hard block — see
   // src/lib/duplicate-detection.ts. `confirmDuplicate: true` (sent when
   // the user clicks "Create anyway" on the warning) skips this check.
@@ -73,6 +86,7 @@ export async function POST(req: NextRequest) {
   }
 
   const contact = await prisma.contact.create({ data: { ...parsed.data, email: parsed.data.email || null } });
+  if (idempotencyKey) await recordIdempotentResult(idempotencyKey, contact.id);
   await logAudit({
     userId: session.user.id,
     action: 'CREATE',
