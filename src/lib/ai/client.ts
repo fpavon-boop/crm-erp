@@ -65,14 +65,40 @@ export async function generateCompletion(req: AiCompletionRequest): Promise<stri
     }),
   });
 
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new AiRequestError(`Anthropic API error (${res.status}): ${JSON.stringify(json).slice(0, 500)}`);
+  // Read as text first rather than res.json().catch(() => ({})) — the
+  // latter silently swallows a non-JSON body (an HTML error page from an
+  // intermediate proxy, a truncated response) into an empty object,
+  // which then produces the same generic "unexpected shape" error as a
+  // genuine API response with no text block, making the two cases
+  // impossible to tell apart from the stored error alone.
+  const rawBody = await res.text();
+  let json: unknown = null;
+  try {
+    json = JSON.parse(rawBody);
+  } catch {
+    json = null;
   }
 
-  const text = json?.content?.[0]?.text;
-  if (typeof text !== 'string') {
-    throw new AiRequestError('Anthropic API returned an unexpected response shape.');
+  if (!res.ok) {
+    const detail = json ? JSON.stringify(json) : rawBody;
+    throw new AiRequestError(`Anthropic API error (${res.status}): ${detail.slice(0, 500)}`);
   }
-  return text;
+
+  // The Messages API response is { content: [{type, text?}, ...] } — a
+  // text block is not always content[0] (e.g. a "thinking" or other
+  // non-text block can precede it), so find the first block that
+  // actually is one rather than assuming position 0.
+  const content = (json as { content?: unknown })?.content;
+  const textBlock = Array.isArray(content)
+    ? content.find((block): block is { type: 'text'; text: string } => {
+        const b = block as { type?: unknown; text?: unknown };
+        return b?.type === 'text' && typeof b.text === 'string';
+      })
+    : undefined;
+
+  if (!textBlock) {
+    const detail = json ? JSON.stringify(json) : rawBody;
+    throw new AiRequestError(`Anthropic API returned an unexpected response shape: ${detail.slice(0, 500)}`);
+  }
+  return textBlock.text;
 }
