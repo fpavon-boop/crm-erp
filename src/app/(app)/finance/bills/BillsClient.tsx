@@ -177,7 +177,18 @@ export default function BillsClient({
       return;
     }
     const data = await res.json();
-    setMessage({ ok: true, text: `${data.imported} row(s) imported for review.` + (problems.length ? ` ${problems.length} skipped.` : '') });
+    const duplicates: Array<{ invoiceNumber: string; vendor: string | null; reason: string }> = data.duplicates || [];
+    const parts = [`${data.imported} row(s) imported for review.`];
+    if (problems.length) parts.push(`${problems.length} skipped (invalid).`);
+    if (duplicates.length) {
+      const already = duplicates.filter((d) => d.reason === 'already_on_file').length;
+      const inFile = duplicates.filter((d) => d.reason === 'duplicate_in_file').length;
+      const bits: string[] = [];
+      if (already) bits.push(`${already} already on file`);
+      if (inFile) bits.push(`${inFile} repeated within this file`);
+      parts.push(`${duplicates.length} skipped as duplicates (${bits.join(', ')}): ${duplicates.map((d) => d.invoiceNumber).join(', ')}.`);
+    }
+    setMessage({ ok: true, text: parts.join(' ') });
     window.location.reload();
   }
 

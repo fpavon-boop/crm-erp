@@ -38,18 +38,25 @@ const EMPTY: CompanyFormValues = {
   email: '',
 };
 
+interface DuplicateCompanyMatch {
+  id: string;
+  name: string;
+  type: string;
+}
+
 export default function CompanyForm({ initial }: { initial?: Partial<CompanyFormValues> }) {
   const router = useRouter();
   const [values, setValues] = useState<CompanyFormValues>({ ...EMPTY, ...initial });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState<DuplicateCompanyMatch[] | null>(null);
 
   function set<K extends keyof CompanyFormValues>(key: K, value: CompanyFormValues[K]) {
     setValues((v) => ({ ...v, [key]: value }));
+    setDuplicates(null); // editing after seeing a warning re-opens the question
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submit(confirmDuplicate: boolean) {
     setSaving(true);
     setError(null);
 
@@ -68,6 +75,7 @@ export default function CompanyForm({ initial }: { initial?: Partial<CompanyForm
       notes: values.notes || null,
       phones: values.phone ? [{ label: 'main', number: values.phone }] : [],
       emails: values.email ? [{ label: 'main', address: values.email }] : [],
+      ...(confirmDuplicate ? { confirmDuplicate: true } : {}),
     };
 
     const res = await fetch(values.id ? `/api/companies/${values.id}` : '/api/companies', {
@@ -77,6 +85,13 @@ export default function CompanyForm({ initial }: { initial?: Partial<CompanyForm
     });
 
     setSaving(false);
+    if (res.status === 409) {
+      const data = await res.json().catch(() => ({}));
+      if (data.duplicate) {
+        setDuplicates(data.matches || []);
+        return;
+      }
+    }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setError(data.error?.formErrors?.join(', ') || 'Failed to save company');
@@ -87,9 +102,33 @@ export default function CompanyForm({ initial }: { initial?: Partial<CompanyForm
     router.refresh();
   }
 
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    submit(false);
+  }
+
   return (
     <form onSubmit={handleSubmit} className="card p-6 space-y-5 max-w-3xl">
       {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {duplicates && duplicates.length > 0 && (
+        <div className="card p-4 border-amber-300 bg-amber-50 text-amber-900 text-sm space-y-2">
+          <p className="font-medium">
+            {duplicates.length === 1 ? 'A company with this name already exists:' : 'Companies with this name already exist:'}
+          </p>
+          <ul className="list-disc list-inside">
+            {duplicates.map((m) => (
+              <li key={m.id}>
+                <a href={`/companies/${m.id}`} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline">{m.name}</a>
+                {' '}<span className="text-amber-700">({m.type})</span>
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="btn-secondary !py-1 !text-xs" disabled={saving} onClick={() => submit(true)}>
+            Create anyway
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>

@@ -4,6 +4,7 @@ import { requireApiModule } from '@/lib/api-auth';
 import { companySchema } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { csvResponse } from '@/lib/csv';
+import { findPossibleDuplicateCompanies } from '@/lib/duplicate-detection';
 
 export async function GET(req: NextRequest) {
   const session = await requireApiModule('companies');
@@ -56,6 +57,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
   const { phones, emails, ...data } = parsed.data;
+
+  // A possible-duplicate warning, not a hard block — see
+  // src/lib/duplicate-detection.ts. `confirmDuplicate: true` (sent when
+  // the user clicks "Create anyway" on the warning) skips this check.
+  if (body?.confirmDuplicate !== true) {
+    const matches = await findPossibleDuplicateCompanies(data.name);
+    if (matches.length > 0) {
+      return NextResponse.json({ duplicate: true, matches }, { status: 409 });
+    }
+  }
 
   const company = await prisma.company.create({
     data: {

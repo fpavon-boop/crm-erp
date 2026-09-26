@@ -4,6 +4,7 @@ import { requireApiModule } from '@/lib/api-auth';
 import { contactSchema } from '@/lib/validation';
 import { logAudit } from '@/lib/audit';
 import { csvResponse } from '@/lib/csv';
+import { findPossibleDuplicateContacts } from '@/lib/duplicate-detection';
 
 export async function GET(req: NextRequest) {
   const session = await requireApiModule('contacts');
@@ -56,6 +57,20 @@ export async function POST(req: NextRequest) {
   const body = await req.json();
   const parsed = contactSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
+
+  // A possible-duplicate warning, not a hard block — see
+  // src/lib/duplicate-detection.ts. `confirmDuplicate: true` (sent when
+  // the user clicks "Create anyway" on the warning) skips this check.
+  if (body?.confirmDuplicate !== true) {
+    const matches = await findPossibleDuplicateContacts({
+      email: parsed.data.email,
+      firstName: parsed.data.firstName,
+      lastName: parsed.data.lastName,
+    });
+    if (matches.length > 0) {
+      return NextResponse.json({ duplicate: true, matches }, { status: 409 });
+    }
+  }
 
   const contact = await prisma.contact.create({ data: { ...parsed.data, email: parsed.data.email || null } });
   await logAudit({

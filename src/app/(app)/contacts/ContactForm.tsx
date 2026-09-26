@@ -31,12 +31,20 @@ const EMPTY: ContactFormValues = {
   notes: '',
 };
 
+interface DuplicateContactMatch {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+}
+
 export default function ContactForm({ initial }: { initial?: Partial<ContactFormValues> }) {
   const router = useRouter();
   const [values, setValues] = useState<ContactFormValues>({ ...EMPTY, ...initial });
   const [companies, setCompanies] = useState<Company[]>([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState<DuplicateContactMatch[] | null>(null);
 
   useEffect(() => {
     fetch('/api/companies')
@@ -46,10 +54,10 @@ export default function ContactForm({ initial }: { initial?: Partial<ContactForm
 
   function set<K extends keyof ContactFormValues>(key: K, value: ContactFormValues[K]) {
     setValues((v) => ({ ...v, [key]: value }));
+    setDuplicates(null); // editing after seeing a warning re-opens the question
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function submit(confirmDuplicate: boolean) {
     setSaving(true);
     setError(null);
 
@@ -62,6 +70,7 @@ export default function ContactForm({ initial }: { initial?: Partial<ContactForm
       position: values.position || null,
       companyId: values.companyId || null,
       notes: values.notes || null,
+      ...(confirmDuplicate ? { confirmDuplicate: true } : {}),
     };
 
     const res = await fetch(values.id ? `/api/contacts/${values.id}` : '/api/contacts', {
@@ -71,6 +80,13 @@ export default function ContactForm({ initial }: { initial?: Partial<ContactForm
     });
 
     setSaving(false);
+    if (res.status === 409) {
+      const data = await res.json().catch(() => ({}));
+      if (data.duplicate) {
+        setDuplicates(data.matches || []);
+        return;
+      }
+    }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setError(data.error?.formErrors?.join(', ') || 'Failed to save contact');
@@ -81,9 +97,35 @@ export default function ContactForm({ initial }: { initial?: Partial<ContactForm
     router.refresh();
   }
 
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    submit(false);
+  }
+
   return (
     <form onSubmit={handleSubmit} className="card p-6 space-y-5 max-w-2xl">
       {error && <p className="text-sm text-red-600">{error}</p>}
+
+      {duplicates && duplicates.length > 0 && (
+        <div className="card p-4 border-amber-300 bg-amber-50 text-amber-900 text-sm space-y-2">
+          <p className="font-medium">
+            {duplicates.length === 1 ? 'A matching contact already exists:' : 'Matching contacts already exist:'}
+          </p>
+          <ul className="list-disc list-inside">
+            {duplicates.map((m) => (
+              <li key={m.id}>
+                <a href={`/contacts/${m.id}`} target="_blank" rel="noreferrer" className="text-blue-700 hover:underline">
+                  {m.firstName} {m.lastName}
+                </a>
+                {m.email && <span className="text-amber-700"> ({m.email})</span>}
+              </li>
+            ))}
+          </ul>
+          <button type="button" className="btn-secondary !py-1 !text-xs" disabled={saving} onClick={() => submit(true)}>
+            Create anyway
+          </button>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">First name *</label>
