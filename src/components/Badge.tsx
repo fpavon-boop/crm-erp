@@ -37,6 +37,7 @@ const COLORS: Record<string, string> = {
   RUNNING: 'bg-blue-100 text-blue-700',
   COMPLETED: 'bg-green-100 text-green-700',
   RETRYING: 'bg-amber-100 text-amber-700',
+  SUCCESS: 'bg-green-100 text-green-700',
 };
 
 export default function Badge({ label }: { label: string }) {

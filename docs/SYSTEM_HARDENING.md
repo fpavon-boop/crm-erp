@@ -288,6 +288,55 @@ internal hostnames, or driver internals — is now logged server-side only
 response still correctly reports `status: "error"` / `database:
 "unreachable"` with a `503`, just without the raw error text.
 
+## E6 — checkLowStock() no longer loads every StockLevel row
+
+`checkLowStock()` (`src/lib/automations/engine.ts`), run on every
+scheduler tick, used to `prisma.stockLevel.findMany()` with no `where` at
+all — every stock level, for every product, in every warehouse — and then
+filter `quantity <= reorderPoint` in JavaScript. Harmless at the ~58
+products this app started with; a full-table read on every tick that
+grows without bound as the catalog and warehouse count grow.
+
+The comparison is between two different tables' columns
+(`StockLevel.quantity` vs. `Product.reorderPoint`, joined through
+`ProductVariant`), which Prisma's query builder has no way to express in
+a single `where` filter — there's no "compare this column to that
+related row's column" operator. The fix is a raw SQL join
+(`prisma.$queryRaw`, a fixed argument-free tagged template — no user
+input, no injection surface) that does the `quantity <= reorderPoint`
+comparison in the database and returns only the rows that are actually
+low. The per-row logic downstream (create a Task, fire the `LOW_STOCK`
+rule trigger) is unchanged; only how the candidate rows are found
+changed.
+
+**Tested** in `tests/low-stock-query.test.ts`: a tracked product at/below
+its reorder point is flagged and gets a Task; one above it isn't; a
+product with `trackInventory: false` is never flagged regardless of
+quantity; the `<=` boundary is inclusive (quantity exactly equal to the
+reorder point still flags); running it twice doesn't duplicate the Task
+(the pre-existing `ensureTask()` dedupe, unaffected by this change).
+
+## F4 — pagination on large list pages
+
+The Companies, Contacts, and Inventory list pages used to `findMany()`
+with no `take`/`skip` at all and render every matching row in one table —
+fine today, but unbounded as each list grows. All three now paginate at
+`DEFAULT_PAGE_SIZE` (25) rows per page via `src/lib/pagination.ts`
+(`parsePage()`, `pageWindow()`, `totalPages()` — pure functions, directly
+unit-tested with no database) and a shared `src/components/Pagination.tsx`
+(a plain `<Link href="?page=N">` control, no client state, matching every
+other filter on these pages — a GET `<form>` that reloads with new query
+params). Each page now runs its existing `findMany()` (unchanged
+`where`/`orderBy`, just with `skip`/`take` added) alongside a matching
+`count()` so the page header and "Showing X-Y of Z" line reflect the true
+total, not just the current page's row count.
+
+**Tested** in `tests/pagination.test.ts`: `parsePage()` never produces a
+negative or fractional page from a malformed query string; `pageWindow()`'s
+skip/take math; `totalPages()`'s rounding (an empty list is still "page 1
+of 1," a partial final page rounds up, an exact multiple doesn't add a
+spurious extra page).
+
 ## Testing summary
 
 - `tests/numbering.test.ts` (new) — D1/F2.
@@ -297,6 +346,8 @@ response still correctly reports `status: "error"` / `database:
 - `tests/inventory-hardening.test.ts` (updated) — one call site updated
   for `createSalesOrderWithInventoryEffect()`'s new signature (number is
   now generated internally, not passed in).
+- `tests/low-stock-query.test.ts` (new) — E6.
+- `tests/pagination.test.ts` (new) — F4.
 
 ## Known limitations / deferred work
 

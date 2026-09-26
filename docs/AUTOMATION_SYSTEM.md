@@ -162,6 +162,14 @@ pre-existing "Recent activity" (`AutomationLog`) section:
   only in container logs.
 - **Recent job runs** — the last 20 `AutomationJobRun` rows regardless of
   status, so a healthy system is visibly healthy too.
+- **Failed AI generations** / **Recent AI generations** (added when
+  Phase 14's AI-Assisted Features shipped) — the same pattern applied to
+  `AiGenerationLog` (`docs/AI_FEATURES.md`): only the "Failed" card
+  renders when there's at least one, and "Recent" always shows the last
+  20 regardless of status. This is currently the only UI for inspecting
+  `AiGenerationLog` — there is no dedicated route or page for it, so a
+  question that needs more than the last 20 entries (e.g. "how many AI
+  calls failed last week") still requires a direct database query.
 
 `GET /api/automations/failures` (`src/app/api/automations/failures/route.ts`)
 is a structured JSON view of the last 100 `FAILED` runs, for external

@@ -2,31 +2,40 @@ import Link from 'next/link';
 import { prisma } from '@/lib/prisma';
 import { requireModule } from '@/lib/session';
 import PageHeader from '@/components/PageHeader';
+import Pagination from '@/components/Pagination';
+import { parsePage, pageWindow } from '@/lib/pagination';
 import { Plus, Download } from 'lucide-react';
 
-export default async function ContactsPage({ searchParams }: { searchParams: { q?: string } }) {
+export default async function ContactsPage({ searchParams }: { searchParams: { q?: string; page?: string } }) {
   await requireModule('contacts');
   const q = searchParams.q?.trim();
+  const page = parsePage(searchParams.page);
 
-  const contacts = await prisma.contact.findMany({
-    where: q
-      ? {
-          OR: [
-            { firstName: { contains: q, mode: 'insensitive' } },
-            { lastName: { contains: q, mode: 'insensitive' } },
-            { email: { contains: q, mode: 'insensitive' } },
-          ],
-        }
-      : undefined,
-    include: { company: true },
-    orderBy: { firstName: 'asc' },
-  });
+  const where = q
+    ? {
+        OR: [
+          { firstName: { contains: q, mode: 'insensitive' as const } },
+          { lastName: { contains: q, mode: 'insensitive' as const } },
+          { email: { contains: q, mode: 'insensitive' as const } },
+        ],
+      }
+    : undefined;
+
+  const [contacts, total] = await Promise.all([
+    prisma.contact.findMany({
+      where,
+      include: { company: true },
+      orderBy: { firstName: 'asc' },
+      ...pageWindow(page),
+    }),
+    prisma.contact.count({ where }),
+  ]);
 
   return (
     <div>
       <PageHeader
         title="Contacts"
-        subtitle={`${contacts.length} contacts`}
+        subtitle={`${total} contacts`}
         actions={
           <>
             <a href={`/api/contacts?format=csv${q ? `&q=${q}` : ''}`} className="btn-secondary">
@@ -83,6 +92,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: { q
           </tbody>
         </table>
       </div>
+      <Pagination page={page} total={total} basePath="/contacts" searchParams={{ q }} />
     </div>
   );
 }

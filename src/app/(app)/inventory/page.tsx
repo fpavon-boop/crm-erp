@@ -3,24 +3,33 @@ import { prisma } from '@/lib/prisma';
 import { requireModule } from '@/lib/session';
 import PageHeader from '@/components/PageHeader';
 import Badge from '@/components/Badge';
+import Pagination from '@/components/Pagination';
+import { parsePage, pageWindow } from '@/lib/pagination';
 import { money } from '@/lib/format';
 import { Plus, Download, Warehouse } from 'lucide-react';
 
-export default async function InventoryPage({ searchParams }: { searchParams: { q?: string } }) {
+export default async function InventoryPage({ searchParams }: { searchParams: { q?: string; page?: string } }) {
   await requireModule('inventory');
   const q = searchParams.q?.trim();
+  const page = parsePage(searchParams.page);
 
-  const products = await prisma.product.findMany({
-    where: q ? { OR: [{ name: { contains: q, mode: 'insensitive' } }, { sku: { contains: q, mode: 'insensitive' } }] } : undefined,
-    include: { variants: { include: { stockLevels: true } } },
-    orderBy: { name: 'asc' },
-  });
+  const where = q ? { OR: [{ name: { contains: q, mode: 'insensitive' as const } }, { sku: { contains: q, mode: 'insensitive' as const } }] } : undefined;
+
+  const [products, total] = await Promise.all([
+    prisma.product.findMany({
+      where,
+      include: { variants: { include: { stockLevels: true } } },
+      orderBy: { name: 'asc' },
+      ...pageWindow(page),
+    }),
+    prisma.product.count({ where }),
+  ]);
 
   return (
     <div>
       <PageHeader
         title="Inventory"
-        subtitle={`${products.length} products`}
+        subtitle={`${total} products`}
         actions={
           <>
             <Link href="/inventory/warehouses" className="btn-secondary"><Warehouse size={16} /> Warehouses</Link>
@@ -57,6 +66,7 @@ export default async function InventoryPage({ searchParams }: { searchParams: { 
           </tbody>
         </table>
       </div>
+      <Pagination page={page} total={total} basePath="/inventory" searchParams={{ q }} />
     </div>
   );
 }

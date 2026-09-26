@@ -148,31 +148,58 @@ async function checkPendingOrders() {
   return pending.length;
 }
 
-async function checkLowStock() {
-  const levels = await prisma.stockLevel.findMany({
-    include: { productVariant: { include: { product: true } }, warehouse: true },
-  });
+interface LowStockRow {
+  quantity: number;
+  warehouseName: string;
+  variantName: string;
+  productId: string;
+  productName: string;
+  reorderPoint: number;
+}
+
+/** SYSTEM_AUDIT.md E6: previously loaded every StockLevel row (across
+ * every product/warehouse) into memory on every scheduler tick and
+ * filtered `quantity <= reorderPoint` in JS — fine at the catalog size
+ * this app started at, but a full-table read that grows without bound as
+ * inventory grows. The comparison is between two different tables'
+ * columns (StockLevel.quantity vs. Product.reorderPoint), which Prisma's
+ * query builder can't express in a single `where` filter, so this is a
+ * raw SQL join instead — the database does the filtering, and only
+ * already-low rows ever reach this process. No user input is
+ * interpolated into the query (a plain, argument-free tagged template),
+ * so there's no injection surface. */
+export async function checkLowStock() {
+  const rows = await prisma.$queryRaw<LowStockRow[]>`
+    SELECT
+      sl.quantity AS quantity,
+      w.name AS "warehouseName",
+      pv.name AS "variantName",
+      p.id AS "productId",
+      p.name AS "productName",
+      p."reorderPoint" AS "reorderPoint"
+    FROM "StockLevel" sl
+    JOIN "ProductVariant" pv ON pv.id = sl."productVariantId"
+    JOIN "Product" p ON p.id = pv."productId"
+    JOIN "Warehouse" w ON w.id = sl."warehouseId"
+    WHERE p."trackInventory" = true AND sl.quantity <= p."reorderPoint"
+  `;
 
   let flagged = 0;
-  for (const level of levels) {
-    const reorderPoint = level.productVariant.product.reorderPoint;
-    if (!level.productVariant.product.trackInventory) continue;
-    if (level.quantity > reorderPoint) continue;
-
+  for (const row of rows) {
     flagged += 1;
     const { created } = await ensureTask({
-      title: `Low stock: ${level.productVariant.product.name} (${level.productVariant.name})`,
-      description: `${level.quantity} units left at ${level.warehouse.name}, reorder point is ${reorderPoint}.`,
+      title: `Low stock: ${row.productName} (${row.variantName})`,
+      description: `${row.quantity} units left at ${row.warehouseName}, reorder point is ${row.reorderPoint}.`,
       relatedType: 'PRODUCT',
-      relatedId: level.productVariant.productId,
+      relatedId: row.productId,
       priority: 'HIGH',
     });
 
     if (created) {
       await runRulesForTrigger('LOW_STOCK', {
-        productId: level.productVariant.productId,
-        productName: level.productVariant.product.name,
-        quantity: level.quantity,
+        productId: row.productId,
+        productName: row.productName,
+        quantity: row.quantity,
       });
     }
   }

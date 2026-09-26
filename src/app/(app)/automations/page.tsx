@@ -8,14 +8,18 @@ import AutomationsClient from './AutomationsClient';
  * (docs/AUTOMATION_SYSTEM.md) — every built-in scheduled job now runs
  * through AutomationJobRun, so a genuine failure (with its full error
  * message and stack trace) is always visible here, never only in
- * container logs. */
+ * container logs. Also surfaces AiGenerationLog (Phase 14,
+ * docs/AI_FEATURES.md) — the only place to inspect AI call
+ * successes/failures without a direct database query. */
 export default async function AutomationsPage() {
   await requireModule('automations');
   const rules = await prisma.automationRule.findMany({ orderBy: { createdAt: 'desc' } });
   const recentLogs = await prisma.automationLog.findMany({ orderBy: { createdAt: 'desc' }, take: 15 });
-  const [recentRuns, failedRuns] = await Promise.all([
+  const [recentRuns, failedRuns, recentAiLogs, failedAiLogs] = await Promise.all([
     prisma.automationJobRun.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
     prisma.automationJobRun.findMany({ where: { status: 'FAILED' }, orderBy: { createdAt: 'desc' }, take: 20 }),
+    prisma.aiGenerationLog.findMany({ orderBy: { createdAt: 'desc' }, take: 20 }),
+    prisma.aiGenerationLog.findMany({ where: { status: 'FAILED' }, orderBy: { createdAt: 'desc' }, take: 20 }),
   ]);
 
   return (
@@ -62,6 +66,39 @@ export default async function AutomationsPage() {
             </li>
           ))}
           {recentRuns.length === 0 && <p className="text-slate-400">No job runs recorded yet.</p>}
+        </ul>
+      </div>
+
+      {failedAiLogs.length > 0 && (
+        <div className="card p-5 mt-6 border-red-300 bg-red-50">
+          <h2 className="font-semibold text-red-800 mb-3">Failed AI generations ({failedAiLogs.length})</h2>
+          <ul className="text-sm space-y-3">
+            {failedAiLogs.map((l) => (
+              <li key={l.id} className="border-b border-red-100 pb-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Badge label={l.status} />
+                  <span className="font-medium">{l.feature.replace(/_/g, ' ')}</span>
+                  {l.entityType && l.entityId && <span className="text-xs text-slate-500">{l.entityType} {l.entityId}</span>}
+                  <span className="text-xs text-slate-400">{l.model || 'no model'} · {l.createdAt.toLocaleString()}</span>
+                </div>
+                {l.errorMessage && <p className="text-red-700 mt-1">{l.errorMessage}</p>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      <div className="card p-5 mt-6">
+        <h2 className="font-semibold text-slate-800 mb-3">Recent AI generations</h2>
+        <ul className="text-sm space-y-1">
+          {recentAiLogs.map((l) => (
+            <li key={l.id} className="flex items-center gap-2 flex-wrap">
+              <Badge label={l.status} />
+              <span>{l.feature.replace(/_/g, ' ')}</span>
+              <span className="text-xs text-slate-400">{l.model || '—'} · {l.createdAt.toLocaleString()}</span>
+            </li>
+          ))}
+          {recentAiLogs.length === 0 && <p className="text-slate-400">No AI generations recorded yet.</p>}
         </ul>
       </div>
 

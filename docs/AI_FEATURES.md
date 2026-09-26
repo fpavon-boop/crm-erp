@@ -196,6 +196,15 @@ degrade gracefully without losing the primary result" precedent as
   clicks Send, exactly like every other draft path in this app. A failed
   or unconfigured AI call shows an inline notice and leaves whatever the
   user had already typed untouched.
+- **`/automations`** (`src/app/(app)/automations/page.tsx`) — gained
+  "Failed AI generations" / "Recent AI generations" cards reading
+  `AiGenerationLog` directly, the same admin-visibility pattern already
+  used there for `AutomationJobRun` (`docs/AUTOMATION_SYSTEM.md`). This is
+  the only administrative view into AI call history — there's no
+  dedicated `/api/ai/*` failures endpoint or page (unlike
+  `/api/automations/failures`); it's folded into the existing automations
+  admin page since `/automations` is already an ADMIN-only page (no other
+  role has the `automations` module).
 
 ## Configuration
 

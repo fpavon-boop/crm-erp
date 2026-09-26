@@ -3,32 +3,41 @@ import { prisma } from '@/lib/prisma';
 import { requireModule } from '@/lib/session';
 import PageHeader from '@/components/PageHeader';
 import Badge from '@/components/Badge';
+import Pagination from '@/components/Pagination';
+import { parsePage, pageWindow } from '@/lib/pagination';
 import { Plus, Download } from 'lucide-react';
 
 export default async function CompaniesPage({
   searchParams,
 }: {
-  searchParams: { q?: string; type?: string };
+  searchParams: { q?: string; type?: string; page?: string };
 }) {
   await requireModule('companies');
 
   const q = searchParams.q?.trim();
   const type = searchParams.type;
+  const page = parsePage(searchParams.page);
 
-  const companies = await prisma.company.findMany({
-    where: {
-      ...(q ? { name: { contains: q, mode: 'insensitive' } } : {}),
-      ...(type ? { type: type as never } : {}),
-    },
-    include: { phones: true, emails: true, _count: { select: { contacts: true } } },
-    orderBy: { name: 'asc' },
-  });
+  const where = {
+    ...(q ? { name: { contains: q, mode: 'insensitive' as const } } : {}),
+    ...(type ? { type: type as never } : {}),
+  };
+
+  const [companies, total] = await Promise.all([
+    prisma.company.findMany({
+      where,
+      include: { phones: true, emails: true, _count: { select: { contacts: true } } },
+      orderBy: { name: 'asc' },
+      ...pageWindow(page),
+    }),
+    prisma.company.count({ where }),
+  ]);
 
   return (
     <div>
       <PageHeader
         title="Companies"
-        subtitle={`${companies.length} companies`}
+        subtitle={`${total} companies`}
         actions={
           <>
             <a href={`/api/companies?format=csv${type ? `&type=${type}` : ''}${q ? `&q=${q}` : ''}`} className="btn-secondary">
@@ -95,6 +104,7 @@ export default async function CompaniesPage({
           </tbody>
         </table>
       </div>
+      <Pagination page={page} total={total} basePath="/companies" searchParams={{ q, type }} />
     </div>
   );
 }
