@@ -9,6 +9,9 @@ const schema = z.object({
   warehouseId: z.string(),
   type: z.enum(['IN', 'OUT', 'ADJUSTMENT']),
   quantity: z.coerce.number().positive(),
+  // Required for ADJUSTMENT (a stocktake correction can go either way);
+  // ignored for IN/OUT, whose direction is fixed by `type`.
+  direction: z.enum(['INCREASE', 'DECREASE']).optional(),
   reason: z.string().optional(),
   // Phase 13: a client-generated key — unlike the WooCommerce sync's
   // delta-based stock updates (already idempotent by construction), a
@@ -16,6 +19,14 @@ const schema = z.object({
   // natural idempotency, so a double-click would otherwise post the
   // movement twice.
   idempotencyKey: z.string().min(1).max(200).optional(),
+}).superRefine((val, ctx) => {
+  if (val.type === 'ADJUSTMENT' && !val.direction) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['direction'],
+      message: "direction ('INCREASE' or 'DECREASE') is required when type is ADJUSTMENT",
+    });
+  }
 });
 
 export async function POST(req: NextRequest) {
@@ -35,7 +46,11 @@ export async function POST(req: NextRequest) {
   await recordStockMovement({
     ...data,
     referenceType: 'MANUAL_ADJUSTMENT',
-    reason: data.reason || `Manual ${data.type.toLowerCase()} by ${session.user.name}`,
+    reason:
+      data.reason ||
+      (data.type === 'ADJUSTMENT'
+        ? `Manual adjustment (${data.direction === 'DECREASE' ? 'decrease' : 'increase'}) by ${session.user.name}`
+        : `Manual ${data.type.toLowerCase()} by ${session.user.name}`),
   });
 
   return NextResponse.json({ ok: true });

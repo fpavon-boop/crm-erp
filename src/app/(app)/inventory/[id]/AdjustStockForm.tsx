@@ -11,6 +11,7 @@ export default function AdjustStockForm({ variants, warehouses }: { variants: Va
   const [productVariantId, setVariantId] = useState(variants[0]?.id || '');
   const [warehouseId, setWarehouseId] = useState(warehouses[0]?.id || '');
   const [type, setType] = useState<'IN' | 'OUT' | 'ADJUSTMENT'>('IN');
+  const [direction, setDirection] = useState<'INCREASE' | 'DECREASE'>('INCREASE');
   const [quantity, setQuantity] = useState('1');
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
@@ -22,7 +23,14 @@ export default function AdjustStockForm({ variants, warehouses }: { variants: Va
     await fetch('/api/inventory/adjust', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ productVariantId, warehouseId, type, quantity: Number(quantity), reason: reason || undefined }),
+      body: JSON.stringify({
+        productVariantId,
+        warehouseId,
+        type,
+        direction: type === 'ADJUSTMENT' ? direction : undefined,
+        quantity: Number(quantity),
+        reason: reason || undefined,
+      }),
     });
     setSaving(false);
     setReason('');
@@ -51,6 +59,15 @@ export default function AdjustStockForm({ variants, warehouses }: { variants: Va
           <option value="ADJUSTMENT">Adjustment</option>
         </select>
       </div>
+      {type === 'ADJUSTMENT' && (
+        <div>
+          <label className="label">Direction</label>
+          <select className="input" value={direction} onChange={(e) => setDirection(e.target.value as never)}>
+            <option value="INCREASE">Increase (found more than expected)</option>
+            <option value="DECREASE">Decrease (found less than expected)</option>
+          </select>
+        </div>
+      )}
       <div>
         <label className="label">Quantity</label>
         <input type="number" min={1} className="input" value={quantity} onChange={(e) => setQuantity(e.target.value)} />

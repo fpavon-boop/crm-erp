@@ -1,7 +1,7 @@
 import Stripe from 'stripe';
 import { prisma } from '@/lib/prisma';
 import { Prisma } from '@prisma/client';
-import { deriveInvoiceStatus } from '@/lib/accounts-receivable';
+import { applyInvoicePaymentDelta } from '@/lib/accounts-receivable';
 
 type Db = typeof prisma | Prisma.TransactionClient;
 
@@ -92,14 +92,7 @@ async function handlePaymentSucceeded(tx: Db, event: Stripe.Event) {
     },
   });
 
-  const newPaid = Number(invoice.amountPaid) + amount;
-  await tx.invoice.update({
-    where: { id: invoice.id },
-    data: {
-      amountPaid: newPaid,
-      status: deriveInvoiceStatus({ status: invoice.status, total: Number(invoice.total), amountPaid: newPaid, dueDate: invoice.dueDate }),
-    },
-  });
+  await applyInvoicePaymentDelta(tx, invoice.id, amount);
 }
 
 /** A failed PaymentIntent never touches Payment/Invoice — no money moved,
@@ -147,16 +140,7 @@ async function handleChargeRefunded(tx: Db, event: Stripe.Event) {
   if (delta <= 0) return; // already reflects this refund state — duplicate/out-of-order delivery, not a new refund
 
   await tx.payment.update({ where: { id: payment.id }, data: { refundedAmount: newRefundedAmount } });
-
-  const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: payment.invoiceId } });
-  const newPaid = Math.max(0, Number(invoice.amountPaid) - delta);
-  await tx.invoice.update({
-    where: { id: invoice.id },
-    data: {
-      amountPaid: newPaid,
-      status: deriveInvoiceStatus({ status: invoice.status, total: Number(invoice.total), amountPaid: newPaid, dueDate: invoice.dueDate }),
-    },
-  });
+  await applyInvoicePaymentDelta(tx, payment.invoiceId, -delta);
 }
 
 export interface ProcessWebhookResult {

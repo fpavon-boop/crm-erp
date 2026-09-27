@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireApiModule } from '@/lib/api-auth';
 import { logAudit } from '@/lib/audit';
-import { deriveInvoiceStatus } from '@/lib/accounts-receivable';
+import { applyInvoicePaymentDelta } from '@/lib/accounts-receivable';
 import { claimIdempotencyKey, recordIdempotentResult } from '@/lib/automations/idempotency';
 import { z } from 'zod';
 
@@ -35,14 +35,8 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const updated = await prisma.$transaction(async (tx) => {
     const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: params.id } });
     await tx.payment.create({ data: { invoiceId: invoice.id, ...data } });
-
-    const newPaid = Number(invoice.amountPaid) + data.amount;
-    const status = deriveInvoiceStatus({ status: invoice.status, total: Number(invoice.total), amountPaid: newPaid, dueDate: invoice.dueDate });
-
-    return tx.invoice.update({
-      where: { id: invoice.id },
-      data: { amountPaid: newPaid, status },
-    });
+    await applyInvoicePaymentDelta(tx, invoice.id, data.amount);
+    return tx.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
   });
   if (idempotencyKey) await recordIdempotentResult(idempotencyKey, updated.id);
 

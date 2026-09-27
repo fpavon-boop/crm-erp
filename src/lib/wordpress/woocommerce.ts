@@ -1,7 +1,7 @@
 import { prisma } from '@/lib/prisma';
 import { recordStockMovement } from '@/lib/automations/stock';
 import { createInvoiceForSalesOrder } from '@/lib/sales-orders';
-import { deriveInvoiceStatus } from '@/lib/accounts-receivable';
+import { applyInvoicePaymentDelta } from '@/lib/accounts-receivable';
 
 const EXTERNAL_SOURCE = 'woocommerce';
 
@@ -439,20 +439,16 @@ async function recordPaymentForPaidWooOrder(
         },
       });
 
-      const fresh = await tx.invoice.findUniqueOrThrow({ where: { id: invoice.id } });
-      const newPaid = Number(fresh.amountPaid) + amount;
       // A freshly auto-created invoice starts life as DRAFT (the schema
       // default) — deriveInvoiceStatus() deliberately never moves a DRAFT
       // invoice on its own (DRAFT/CANCELLED are treated as manually-set,
       // terminal states elsewhere in this app). That rule exists for a
       // human-managed invoice that genuinely hasn't been issued yet; this
       // one represents an already-completed, already-paid transaction, so
-      // it's evaluated as if it started SENT rather than DRAFT — the
+      // treatDraftAsSent evaluates it as if it started SENT instead — the
       // amountPaid-vs-total precedence in deriveInvoiceStatus then
       // correctly resolves it straight to PAID.
-      const baseStatus = fresh.status === 'DRAFT' ? 'SENT' : fresh.status;
-      const status = deriveInvoiceStatus({ status: baseStatus, total: Number(fresh.total), amountPaid: newPaid, dueDate: fresh.dueDate });
-      await tx.invoice.update({ where: { id: fresh.id }, data: { amountPaid: newPaid, status } });
+      await applyInvoicePaymentDelta(tx, invoice.id, amount, { treatDraftAsSent: true });
     });
   } catch (err) {
     const message = `Failed to record payment for WooCommerce order ${o.id} (#${o.number}): ${err instanceof Error ? err.message : String(err)}`;
@@ -508,16 +504,7 @@ async function reverseWooOrderPaymentIfRefunded(o: WooOrder, warnings: string[],
   try {
     await prisma.$transaction(async (tx) => {
       await tx.payment.update({ where: { id: payment.id }, data: { refundedAmount: fullAmount } });
-
-      const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: payment.invoiceId } });
-      const newPaid = Math.max(0, Number(invoice.amountPaid) - delta);
-      await tx.invoice.update({
-        where: { id: invoice.id },
-        data: {
-          amountPaid: newPaid,
-          status: deriveInvoiceStatus({ status: invoice.status, total: Number(invoice.total), amountPaid: newPaid, dueDate: invoice.dueDate }),
-        },
-      });
+      await applyInvoicePaymentDelta(tx, payment.invoiceId, -delta);
     });
   } catch (err) {
     const message = `Failed to reverse payment for refunded WooCommerce order ${o.id} (#${o.number}): ${err instanceof Error ? err.message : String(err)}`;

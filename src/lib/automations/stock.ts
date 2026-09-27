@@ -56,14 +56,25 @@ export async function recordStockMovement(params: {
   productVariantId: string;
   warehouseId: string;
   type: StockMovementType;
-  quantity: number; // always positive; direction is determined by `type`
+  quantity: number; // always positive; direction is determined by `type` (and `direction` for ADJUSTMENT)
   reason?: string;
   referenceType?: string;
   referenceId?: string;
   db?: Db;
+  /** ADJUSTMENT only: which way this correction moves stock. IN and OUT
+   * ignore this — their direction is fixed by `type`. Defaults to
+   * 'INCREASE' if omitted, matching this function's pre-existing behavior
+   * for any caller that predates this option. A stocktake correction that
+   * found *fewer* units on hand than the system shows must pass
+   * 'DECREASE' — see docs/INVENTORY_RULES.md. */
+  direction?: 'INCREASE' | 'DECREASE';
 }) {
   const delta =
-    params.type === 'OUT' ? -Math.abs(params.quantity) : Math.abs(params.quantity);
+    params.type === 'OUT'
+      ? -Math.abs(params.quantity)
+      : params.type === 'ADJUSTMENT' && params.direction === 'DECREASE'
+        ? -Math.abs(params.quantity)
+        : Math.abs(params.quantity);
 
   const run = async (client: Db) => {
     await client.stockMovement.create({

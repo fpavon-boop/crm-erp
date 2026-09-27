@@ -541,7 +541,7 @@ model SalesOrder {
   company     Company?         @relation(fields: [companyId], references: [id], onDelete: SetNull)
   contactId   String?
   contact     Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  quoteId     String?
+  quoteId     String?          @unique
   quote       Quote?           @relation(fields: [quoteId], references: [id], onDelete: SetNull)
   status      SalesOrderStatus @default(DRAFT)
   subtotal    Decimal          @default(0) @db.Decimal(14, 2)
@@ -1220,4 +1220,42 @@ model WordPressLead {
 
   @@index([companyId])
   @@index([contactId])
+}
+
+// =============================================================================
+// Sales channel abstraction (docs/SALES_CHANNEL_ARCHITECTURE.md)
+// =============================================================================
+//
+// Purely additive: this is a new, generic landing spot for multi-channel
+// external-identity mapping, separate from the existing WooCommerce-specific
+// `externalSource`/`externalId` columns already on Company/Product/
+// ProductVariant/SalesOrder/Payment. Those keep working exactly as they do
+// today — nothing in the WooCommerce sync code reads or writes
+// ChannelReference. Amazon/Walmart/TikTok Shop have no live integration; this
+// only gives them a schema to target when that work is scoped later.
+
+enum SalesChannel {
+  WOOCOMMERCE
+  AMAZON
+  WALMART
+  TIKTOK_SHOP
+}
+
+model ChannelReference {
+  id                 String            @id @default(cuid())
+  channel            SalesChannel
+  entityType         RelatedEntityType
+  entityId           String
+  externalOrderId    String?
+  externalCustomerId String?
+  externalProductId  String?
+  externalSku        String?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@unique([channel, entityType, entityId])
+  @@index([channel, externalOrderId])
+  @@index([channel, externalCustomerId])
+  @@index([channel, externalProductId])
+  @@index([channel, externalSku])
 }

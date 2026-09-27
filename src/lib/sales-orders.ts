@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/prisma';
-import type { Prisma, Invoice, InvoiceItem, SalesOrder, SalesOrderStatus } from '@prisma/client';
+import type { Prisma, Invoice, InvoiceItem, Quote, SalesOrder, SalesOrderStatus, QuoteStatus } from '@prisma/client';
 import {
   applySalesOrderInventoryEffect,
   applySalesOrderLineMovements,
@@ -319,5 +319,75 @@ export async function createInvoiceForSalesOrder(
     });
 
     return { invoice, created: true };
+  });
+}
+
+export class QuoteNotFoundError extends Error {
+  constructor(quoteId: string) {
+    super(`Quote ${quoteId} not found`);
+    this.name = 'QuoteNotFoundError';
+  }
+}
+
+/** Thrown when converting a quote that isn't ACCEPTED (or that's ACCEPTED
+ * but already has a sales order — see convertQuoteToSalesOrder). Surface as
+ * a 409, the same treatment SalesOrderStatusConflictError gets. */
+export class InvalidQuoteConversionError extends Error {
+  constructor(public readonly status: QuoteStatus) {
+    super(`Cannot convert a quote with status ${status} — it must be ACCEPTED.`);
+    this.name = 'InvalidQuoteConversionError';
+  }
+}
+
+export interface ConvertQuoteResult {
+  order: SalesOrder & { items: Prisma.SalesOrderItemGetPayload<Record<string, never>>[] };
+  created: boolean;
+}
+
+/** Converts an ACCEPTED quote into a sales order, copying its line items.
+ * Idempotent and race-safe like createInvoiceForSalesOrder above: an
+ * advisory lock on the quote id serializes concurrent attempts, and an
+ * existing SalesOrder for this quote (checked inside that same lock) is
+ * returned as-is rather than creating a second one — so two concurrent
+ * "Convert" requests (two tabs, a retried click) can never create two
+ * orders from one quote. `SalesOrder.quoteId` is also `@unique` at the
+ * database level as defense-in-depth. */
+export async function convertQuoteToSalesOrder(quote: Quote & { items: Prisma.QuoteItemGetPayload<Record<string, never>>[] }): Promise<ConvertQuoteResult> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${quote.id}))`;
+
+    const existing = await tx.salesOrder.findFirst({ where: { quoteId: quote.id }, include: { items: true } });
+    if (existing) return { order: existing, created: false };
+
+    const fresh = await tx.quote.findUnique({ where: { id: quote.id } });
+    if (!fresh) throw new QuoteNotFoundError(quote.id);
+    if (fresh.status !== 'ACCEPTED') throw new InvalidQuoteConversionError(fresh.status);
+
+    const number = await generateNumber('salesOrder', tx);
+    const order = await tx.salesOrder.create({
+      data: {
+        number,
+        companyId: quote.companyId,
+        contactId: quote.contactId,
+        quoteId: quote.id,
+        subtotal: quote.subtotal,
+        taxTotal: quote.taxTotal,
+        discountTotal: quote.discountTotal,
+        total: quote.total,
+        items: {
+          create: quote.items.map((i) => ({
+            productId: i.productId,
+            productVariantId: i.productVariantId,
+            description: i.description,
+            quantity: i.quantity,
+            unitPrice: i.unitPrice,
+            taxRate: i.taxRate,
+            discount: i.discount,
+          })),
+        },
+      },
+      include: { items: true },
+    });
+    return { order, created: true };
   });
 }

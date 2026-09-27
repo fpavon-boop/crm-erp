@@ -1,7 +1,10 @@
 import { prisma } from '@/lib/prisma';
+import { Prisma } from '@prisma/client';
 import type { InvoiceStatus } from '@prisma/client';
 import { computeTotals } from '@/lib/totals';
 import { toNumber } from '@/lib/format';
+
+type Db = typeof prisma | Prisma.TransactionClient;
 
 /**
  * Statuses this module (and every place that records a payment) treats as
@@ -51,6 +54,65 @@ export function deriveInvoiceStatus(input: InvoiceFinancialInput, now: Date = ne
  * "Known limitations") owes nothing further, not a negative balance. */
 export function computeBalanceDue(total: number, amountPaid: number): number {
   return Math.max(0, Math.round((total - amountPaid) * 100) / 100);
+}
+
+/**
+ * Atomically applies `delta` (positive for a payment, negative for a
+ * refund/reversal) to Invoice.amountPaid and re-derives status from the
+ * resulting value, then returns the up-to-date row.
+ *
+ * This replaces the previous pattern used at every call site (manual
+ * payments, the Stripe webhook, the WooCommerce payment sync) of reading
+ * `amountPaid`, computing the new total in application code, then writing
+ * the absolute value back — which is a classic lost-update race: two
+ * payment events for the same invoice landing close together (e.g. a
+ * Stripe webhook arriving at the same moment staff records a manual
+ * payment) could both read the same starting value, and whichever write
+ * committed last would silently overwrite the other's contribution.
+ *
+ * The fix is a single `UPDATE ... SET "amountPaid" = ... WHERE id = ...`
+ * statement: Postgres holds that row's write lock for the rest of the
+ * transaction regardless of isolation level, so a second, concurrent call
+ * for the same invoice blocks until the first commits, then applies its
+ * own delta on top of the now-current value — the two contributions always
+ * combine correctly instead of one clobbering the other. Never lets
+ * amountPaid go negative (mirrors upsertStockLevelClamped's GREATEST
+ * pattern in `@/lib/automations/stock`).
+ *
+ * `treatDraftAsSent` covers one existing special case (WooCommerce
+ * auto-creates an invoice that's technically still DRAFT but represents an
+ * already-completed, already-paid order): deriveInvoiceStatus() never
+ * moves a DRAFT invoice on its own, so this evaluates it as if it started
+ * SENT instead, letting the amountPaid-vs-total precedence resolve it to
+ * PAID as intended.
+ */
+export async function applyInvoicePaymentDelta(
+  db: Db,
+  invoiceId: string,
+  delta: number,
+  opts?: { treatDraftAsSent?: boolean }
+): Promise<{ id: string; amountPaid: number; total: number; status: InvoiceStatus; dueDate: Date | null; companyId: string | null }> {
+  const rows = await db.$queryRaw<
+    Array<{ id: string; amountPaid: Prisma.Decimal; total: Prisma.Decimal; status: InvoiceStatus; dueDate: Date | null; companyId: string | null }>
+  >`
+    UPDATE "Invoice"
+    SET "amountPaid" = GREATEST(0, "amountPaid" + ${delta})
+    WHERE id = ${invoiceId}
+    RETURNING id, "amountPaid", total, status, "dueDate", "companyId"
+  `;
+  const row = rows[0];
+  if (!row) throw new Error(`Invoice ${invoiceId} not found`);
+
+  const amountPaid = Number(row.amountPaid);
+  const total = Number(row.total);
+  const baseStatus = opts?.treatDraftAsSent && row.status === 'DRAFT' ? 'SENT' : row.status;
+  const status = deriveInvoiceStatus({ status: baseStatus, total, amountPaid, dueDate: row.dueDate });
+
+  if (status !== row.status) {
+    await db.invoice.update({ where: { id: invoiceId }, data: { status } });
+  }
+
+  return { id: row.id, amountPaid, total, status, dueDate: row.dueDate, companyId: row.companyId };
 }
 
 export interface InvoiceFinancialDiscrepancy {
