@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import {
   brandProfileInputSchema,
   toBrandContext,
@@ -88,27 +89,72 @@ export function fakeMatches(row: FakeRow, where: FakeRow = {}): boolean {
   });
 }
 
-export function fakeModel(prefix: string, defaults: FakeRow = {}) {
+export interface FakeModelOptions {
+  /** Composite unique constraints to enforce, e.g. [['videoProjectId', 'order']]. */
+  unique?: string[][];
+}
+
+export function fakeModel(prefix: string, defaults: FakeRow = {}, options: FakeModelOptions = {}) {
   const rows = new Map<string, FakeRow>();
   let seq = 0;
   const pick = (r: FakeRow | undefined) => (r ? { ...r } : null);
+
+  // Prisma.JsonNull / DbNull are write-side markers; real reads return null.
+  const unmark = (v: unknown) => (v instanceof Prisma.NullTypes.JsonNull || v instanceof Prisma.NullTypes.DbNull ? null : v);
+  const apply = (row: FakeRow, data: FakeRow) => {
+    for (const [k, raw] of Object.entries(data)) {
+      if (raw === undefined) continue;
+      const v = unmark(raw);
+      row[k] = v && typeof v === 'object' && 'increment' in v ? (row[k] ?? 0) + (v as { increment: number }).increment : v;
+    }
+    row.updatedAt = new Date();
+  };
+  const checkUnique = (row: FakeRow) => {
+    for (const cols of options.unique ?? []) {
+      const clash = [...rows.values()].find((r) => r.id !== row.id && cols.every((c) => r[c] === row[c]));
+      if (clash) throw Object.assign(new Error(`Unique constraint failed on (${cols.join(', ')})`), { code: 'P2002' });
+    }
+  };
+  const sort = (list: FakeRow[], orderBy?: FakeRow) => {
+    const [key, dir] = orderBy ? Object.entries(orderBy)[0] : [];
+    if (!key) return list;
+    return [...list].sort((a, b) => (a[key] < b[key] ? -1 : a[key] > b[key] ? 1 : 0) * (dir === 'desc' ? -1 : 1));
+  };
+
   return {
     rows,
     create: async ({ data }: FakeRow) => {
-      const row = { id: `${prefix}_${++seq}`, createdAt: new Date(), updatedAt: new Date(), ...defaults, ...data };
+      const row: FakeRow = { id: data.id ?? `${prefix}_${++seq}`, createdAt: new Date(), updatedAt: new Date(), ...defaults };
+      apply(row, data);
+      checkUnique(row);
       rows.set(row.id, row);
       return { ...row };
     },
     findUnique: async ({ where }: FakeRow) => pick(rows.get(where.id)),
     findFirst: async ({ where }: FakeRow) => pick([...rows.values()].find((r) => fakeMatches(r, where))),
-    findMany: async ({ where, skip = 0, take }: FakeRow) =>
-      [...rows.values()].filter((r) => fakeMatches(r, where)).slice(skip, take ? skip + take : undefined).map((r) => ({ ...r })),
+    findMany: async ({ where, skip = 0, take, orderBy }: FakeRow = {}) =>
+      sort([...rows.values()].filter((r) => fakeMatches(r, where)), orderBy)
+        .slice(skip, take ? skip + take : undefined)
+        .map((r) => ({ ...r })),
     count: async ({ where }: FakeRow) => [...rows.values()].filter((r) => fakeMatches(r, where)).length,
     update: async ({ where, data }: FakeRow) => {
       const row = rows.get(where.id);
       if (!row) throw new Error(`${prefix} ${where.id} not found`);
-      Object.assign(row, data, { updatedAt: new Date() });
-      return { ...row };
+      const next = { ...row };
+      apply(next, data);
+      checkUnique(next);
+      rows.set(row.id, next);
+      return { ...next };
+    },
+    updateMany: async ({ where, data }: FakeRow) => {
+      const hits = [...rows.values()].filter((r) => fakeMatches(r, where));
+      hits.forEach((r) => apply(r, data));
+      return { count: hits.length };
+    },
+    delete: async ({ where }: FakeRow) => {
+      const row = rows.get(where.id);
+      rows.delete(where.id);
+      return row;
     },
   };
 }

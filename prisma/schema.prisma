@@ -1620,6 +1620,28 @@ model MarketingTemplate {
   @@unique([provider, externalTemplateId])
 }
 
+enum VideoPlatform {
+  TIKTOK
+  INSTAGRAM_REELS
+  FACEBOOK_REELS
+}
+
+enum VideoTextPosition {
+  TOP
+  CENTER
+  BOTTOM
+}
+
+enum VideoTransition {
+  CUT
+  FADE
+  SLIDE
+  ZOOM
+}
+
+/// Lifecycle = status (DRAFT → HUMAN_REVIEW → APPROVED / REJECTED) + renderStatus
+/// (QUEUED/RENDERING → COMPLETED / FAILED). Rendering requires approvedVersion
+/// == version: any edit after approval bumps version and voids the approval.
 model VideoProject {
   id                String                  @id @default(cuid())
   campaignId        String?
@@ -1636,6 +1658,16 @@ model VideoProject {
   outputAssetId     String?
   outputAsset       MarketingAsset?         @relation("VideoProjectOutput", fields: [outputAssetId], references: [id], onDelete: SetNull)
   errorMessage      String?
+  platform          VideoPlatform           @default(TIKTOK)
+  language          MarketingLanguage       @default(EN)
+  version           Int                     @default(1)
+  approvedVersion   Int?
+  approvedById      String? // soft ref: User.id (ADMIN)
+  approvedAt        DateTime?
+  audioAssetId      String? // soft ref: MarketingAsset.id (music / voiceover track)
+  renderRequestedAt DateTime?
+  renderedAt        DateTime?
+  renderAttempts    Int                     @default(0)
   createdById       String? // soft ref: User.id
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
@@ -1655,6 +1687,12 @@ model VideoScene {
   script         String?         @db.Text
   voiceover      String?         @db.Text
   onScreenText   String?
+  /// What the renderer should show when no asset is assigned (or how to treat it).
+  visualCue      String?         @db.Text
+  textPosition   VideoTextPosition?
+  /// Optional custom overlay box {x, y, width, height} as 0..1 fractions of the frame.
+  textBox        Json?
+  transition     VideoTransition @default(CUT)
   durationSec    Decimal?        @db.Decimal(8, 2)
   assetId        String?
   asset          MarketingAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
