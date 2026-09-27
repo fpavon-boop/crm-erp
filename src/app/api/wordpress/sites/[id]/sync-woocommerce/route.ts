@@ -13,6 +13,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     const result = await syncWooCommerce(params.id);
     return NextResponse.json(result);
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error('WooCommerce sync failed', err);
+    return NextResponse.json({ error: 'Sync failed' }, { status: 500 });
   }
 }

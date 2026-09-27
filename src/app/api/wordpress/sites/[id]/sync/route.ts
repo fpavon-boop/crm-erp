@@ -13,6 +13,7 @@ export async function POST(_req: NextRequest, { params }: { params: { id: string
     const result = await syncWordPressSite(params.id);
     return NextResponse.json(result);
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error('WordPress site sync failed', err);
+    return NextResponse.json({ error: 'Sync failed' }, { status: 500 });
   }
 }

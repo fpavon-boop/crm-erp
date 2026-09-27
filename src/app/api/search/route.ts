@@ -1,37 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireApiSession } from '@/lib/api-auth';
+import { canAccess } from '@/lib/permissions';
+import type { Role } from '@prisma/client';
 
 export async function GET(req: NextRequest) {
   const session = await requireApiSession();
   if (session instanceof NextResponse) return session;
+  const role = session.user.role as Role;
 
   const q = req.nextUrl.searchParams.get('q')?.trim() || '';
   if (q.length < 2) return NextResponse.json({ results: [] });
 
   const [companies, contacts, invoices, orders, products] = await Promise.all([
-    prisma.company.findMany({
-      where: { name: { contains: q, mode: 'insensitive' } },
-      take: 5,
-    }),
-    prisma.contact.findMany({
-      where: {
-        OR: [
-          { firstName: { contains: q, mode: 'insensitive' } },
-          { lastName: { contains: q, mode: 'insensitive' } },
-          { email: { contains: q, mode: 'insensitive' } },
-        ],
-      },
-      take: 5,
-    }),
-    prisma.invoice.findMany({ where: { number: { contains: q, mode: 'insensitive' } }, take: 5 }),
-    prisma.salesOrder.findMany({ where: { number: { contains: q, mode: 'insensitive' } }, take: 5 }),
-    prisma.product.findMany({
-      where: {
-        OR: [{ name: { contains: q, mode: 'insensitive' } }, { sku: { contains: q, mode: 'insensitive' } }],
-      },
-      take: 5,
-    }),
+    canAccess(role, 'companies')
+      ? prisma.company.findMany({
+          where: { name: { contains: q, mode: 'insensitive' } },
+          take: 5,
+        })
+      : [],
+    canAccess(role, 'contacts')
+      ? prisma.contact.findMany({
+          where: {
+            OR: [
+              { firstName: { contains: q, mode: 'insensitive' } },
+              { lastName: { contains: q, mode: 'insensitive' } },
+              { email: { contains: q, mode: 'insensitive' } },
+            ],
+          },
+          take: 5,
+        })
+      : [],
+    canAccess(role, 'invoicing')
+      ? prisma.invoice.findMany({ where: { number: { contains: q, mode: 'insensitive' } }, take: 5 })
+      : [],
+    canAccess(role, 'sales')
+      ? prisma.salesOrder.findMany({ where: { number: { contains: q, mode: 'insensitive' } }, take: 5 })
+      : [],
+    canAccess(role, 'inventory')
+      ? prisma.product.findMany({
+          where: {
+            OR: [{ name: { contains: q, mode: 'insensitive' } }, { sku: { contains: q, mode: 'insensitive' } }],
+          },
+          take: 5,
+        })
+      : [],
   ]);
 
   const results = [

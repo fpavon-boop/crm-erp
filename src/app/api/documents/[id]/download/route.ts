@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireApiSession } from '@/lib/api-auth';
 import { readStoredFile } from '@/lib/uploads';
+import { canAccess, moduleForEntityType } from '@/lib/permissions';
+import type { Role } from '@prisma/client';
 
 export const runtime = 'nodejs';
 
@@ -11,6 +13,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 
   const doc = await prisma.document.findUnique({ where: { id: params.id } });
   if (!doc) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (!canAccess(session.user.role as Role, moduleForEntityType(doc.entityType))) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
 
   const buffer = await readStoredFile(doc.storedPath);
   return new NextResponse(new Uint8Array(buffer), {
@@ -24,6 +29,12 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   const session = await requireApiSession();
   if (session instanceof NextResponse) return session;
+
+  const doc = await prisma.document.findUnique({ where: { id: params.id } });
+  if (!doc) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (!canAccess(session.user.role as Role, moduleForEntityType(doc.entityType))) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
 
   await prisma.document.delete({ where: { id: params.id } });
   return NextResponse.json({ ok: true });

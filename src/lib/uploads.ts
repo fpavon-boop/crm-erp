@@ -2,6 +2,25 @@ import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 
+/** Types accepted by the general document-attachment upload (companies,
+ * contacts, etc.) — deliberately broader than ALLOWED_BILL_TYPES since these
+ * attachments aren't limited to bills/receipts. */
+export const ALLOWED_DOCUMENT_TYPES: Record<string, string> = {
+  'application/pdf': 'pdf',
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/heic': 'heic',
+  'text/csv': 'csv',
+  'text/plain': 'txt',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/msword': 'doc',
+};
+
+export const MAX_DOCUMENT_FILE_BYTES = 15 * 1024 * 1024;
+
 export function getUploadsDir(): string {
   return process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads');
 }

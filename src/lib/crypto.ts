@@ -40,3 +40,11 @@ export function decryptSecret(payload: string): string {
   ]);
   return decrypted.toString('utf8');
 }
+
+/** Constant-time string comparison for webhook/cron secrets, so a wrong
+ * guess can't be narrowed down via response-time differences. */
+export function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+}

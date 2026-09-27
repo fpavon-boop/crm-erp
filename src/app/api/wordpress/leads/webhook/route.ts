@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
+import { safeEqual } from '@/lib/crypto';
 
 export const runtime = 'nodejs';
 
@@ -35,7 +36,8 @@ const schema = z.object({
 
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-webhook-secret');
-  if (!process.env.WORDPRESS_WEBHOOK_SECRET || secret !== process.env.WORDPRESS_WEBHOOK_SECRET) {
+  const expected = process.env.WORDPRESS_WEBHOOK_SECRET;
+  if (!expected || !secret || !safeEqual(secret, expected)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 

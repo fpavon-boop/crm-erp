@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ result });
   } catch (err) {
     await logAttempt('FAILED');
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    console.error('WhatsApp send failed', err);
+    return NextResponse.json({ error: 'Send failed' }, { status: 500 });
   }
 }

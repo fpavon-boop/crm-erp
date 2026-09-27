@@ -3,8 +3,15 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/prisma';
 
+// A placeholder bcrypt hash (of a value nobody can type) so a login attempt
+// for a nonexistent email still pays the same bcrypt.compare cost as one for
+// a real email with a wrong password — otherwise the two cases are
+// distinguishable by response time (a user-enumeration side channel).
+const DUMMY_PASSWORD_HASH = '$2a$10$hrYQPtZWLR5kWuTHAD7wSuLOuCPzdinR/k.dqtb20Kk6sBCyMSlwu';
+
 export const authOptions: AuthOptions = {
-  session: { strategy: 'jwt' },
+  session: { strategy: 'jwt', maxAge: 12 * 60 * 60 },
+  jwt: { maxAge: 12 * 60 * 60 },
   pages: {
     signIn: '/login',
   },
@@ -21,7 +28,10 @@ export const authOptions: AuthOptions = {
         const user = await prisma.user.findUnique({
           where: { email: credentials.email.toLowerCase().trim() },
         });
-        if (!user || !user.active) return null;
+        if (!user || !user.active) {
+          await bcrypt.compare(credentials.password, DUMMY_PASSWORD_HASH);
+          return null;
+        }
 
         const valid = await bcrypt.compare(credentials.password, user.passwordHash);
         if (!valid) return null;

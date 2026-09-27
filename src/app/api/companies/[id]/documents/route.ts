@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { requireApiModule } from '@/lib/api-auth';
-import { saveUploadedFile } from '@/lib/uploads';
+import { saveUploadedFile, ALLOWED_DOCUMENT_TYPES, MAX_DOCUMENT_FILE_BYTES } from '@/lib/uploads';
 
 export const runtime = 'nodejs';
 
@@ -13,6 +13,12 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
   const file = formData.get('file');
   if (!(file instanceof File)) {
     return NextResponse.json({ error: 'file is required' }, { status: 400 });
+  }
+  if (!(file.type in ALLOWED_DOCUMENT_TYPES)) {
+    return NextResponse.json({ error: `Unsupported file type: ${file.type || 'unknown'}` }, { status: 400 });
+  }
+  if (file.size > MAX_DOCUMENT_FILE_BYTES) {
+    return NextResponse.json({ error: 'File exceeds the 15MB limit' }, { status: 400 });
   }
 
   const buffer = Buffer.from(await file.arrayBuffer());

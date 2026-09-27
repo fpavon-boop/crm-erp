@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
-import { requireApiSession } from '@/lib/api-auth';
+import { requireApiModule } from '@/lib/api-auth';
 import { renderInvoicePdf } from '@/lib/pdf';
 
 export const runtime = 'nodejs';
 
 export async function GET(_req: NextRequest, { params }: { params: { id: string } }) {
-  const session = await requireApiSession();
+  const session = await requireApiModule('invoicing');
   if (session instanceof NextResponse) return session;
 
   const invoice = await prisma.invoice.findUnique({
