@@ -1335,6 +1335,15 @@ enum MarketingAssetSource {
   AI_GENERATED
   N8N
   EXTERNAL_URL
+  /// Read-only link to an existing core Document (entityType PRODUCT); the
+  /// file is never copied, moved or modified.
+  ERP_DOCUMENT
+}
+
+enum MarketingAssetOrientation {
+  SQUARE
+  VERTICAL
+  LANDSCAPE
 }
 
 enum MarketingTemplateKind {
@@ -1548,7 +1557,15 @@ model MarketingContent {
 }
 
 model MarketingAsset {
-  id          String                  @id @default(cuid())
+  id               String                     @id @default(cuid())
+  name             String?
+  tags             String[]
+  /// Nearest standard ratio label ("1:1", "9:16", "16:9", "4:5", ...) or "custom".
+  aspectRatio      String?
+  orientation      MarketingAssetOrientation?
+  /// soft ref: Document.id when source = ERP_DOCUMENT
+  sourceDocumentId String?
+  archivedAt       DateTime?
   campaignId  String?
   campaign    MarketingCampaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   type        MarketingAssetType
@@ -1574,6 +1591,8 @@ model MarketingAsset {
 
   @@unique([source, externalId])
   @@index([campaignId])
+  @@index([sourceDocumentId])
+  @@index([orientation])
 }
 
 model MarketingTemplate {
@@ -1584,7 +1603,12 @@ model MarketingTemplate {
   channel            MarketingChannel?
   externalTemplateId String?
   body               String?                   @db.Text
+  description        String?
+  /// Declared placeholder schema: [{ key, required, maxLength?, description?, custom? }].
   variables          Json?
+  /// Placeholder keys the template uses (parsed from body / declarations on save).
+  placeholders       String[]
+  createdById        String? // soft ref: User.id
   brandProfileId     String?
   brandProfile       MarketingBrandProfile?    @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
   active             Boolean                   @default(true)

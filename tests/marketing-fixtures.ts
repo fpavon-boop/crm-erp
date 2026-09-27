@@ -69,3 +69,46 @@ export class ScriptedAdapter extends BaseProviderAdapter {
     return { text: r, provider: this.name, model: this.model, stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 }, requestId: null };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Minimal in-memory Prisma model (create/find/update/count with the filter
+// operators the marketing services use: equality, null, in, has, not).
+// ---------------------------------------------------------------------------
+type FakeRow = Record<string, any>;
+
+export function fakeMatches(row: FakeRow, where: FakeRow = {}): boolean {
+  return Object.entries(where).every(([k, cond]) => {
+    const v = row[k];
+    if (cond && typeof cond === 'object' && !(cond instanceof Date) && !Array.isArray(cond)) {
+      if ('in' in cond) return cond.in.includes(v);
+      if ('has' in cond) return Array.isArray(v) && v.includes(cond.has);
+      if ('not' in cond) return v !== cond.not;
+    }
+    return (v ?? null) === cond;
+  });
+}
+
+export function fakeModel(prefix: string, defaults: FakeRow = {}) {
+  const rows = new Map<string, FakeRow>();
+  let seq = 0;
+  const pick = (r: FakeRow | undefined) => (r ? { ...r } : null);
+  return {
+    rows,
+    create: async ({ data }: FakeRow) => {
+      const row = { id: `${prefix}_${++seq}`, createdAt: new Date(), updatedAt: new Date(), ...defaults, ...data };
+      rows.set(row.id, row);
+      return { ...row };
+    },
+    findUnique: async ({ where }: FakeRow) => pick(rows.get(where.id)),
+    findFirst: async ({ where }: FakeRow) => pick([...rows.values()].find((r) => fakeMatches(r, where))),
+    findMany: async ({ where, skip = 0, take }: FakeRow) =>
+      [...rows.values()].filter((r) => fakeMatches(r, where)).slice(skip, take ? skip + take : undefined).map((r) => ({ ...r })),
+    count: async ({ where }: FakeRow) => [...rows.values()].filter((r) => fakeMatches(r, where)).length,
+    update: async ({ where, data }: FakeRow) => {
+      const row = rows.get(where.id);
+      if (!row) throw new Error(`${prefix} ${where.id} not found`);
+      Object.assign(row, data, { updatedAt: new Date() });
+      return { ...row };
+    },
+  };
+}
