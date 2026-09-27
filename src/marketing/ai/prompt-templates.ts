@@ -50,6 +50,9 @@ export interface MarketingPromptTemplate<I, O> {
   description: string;
   inputSchema: ZodType<I, any, unknown>;
   outputSchema: ZodType<O, any, unknown>;
+  /** Optional input-aware tightening of outputSchema (e.g. "only the channels
+   * the user asked for"). Used instead of outputSchema when present. */
+  outputSchemaFor?(input: I): ZodType<O, any, unknown>;
   build(input: I, brand: BrandContext, redactor: Redactor): TextRequest;
   review?(output: O, brand: BrandContext, input: I): ComplianceReview;
 }
@@ -424,7 +427,143 @@ export const ctasTemplate: MarketingPromptTemplate<z.output<typeof ctasInput>, z
   },
 };
 
+// =============================================================================
+// 6. Campaign strategy (objectives + audience + channel mix + post concepts)
+// =============================================================================
+
+export const MARKETING_CHANNELS = CHANNELS;
+export const POST_FORMATS = ['POST', 'CAROUSEL', 'REEL', 'STORY', 'VIDEO', 'EMAIL', 'WHATSAPP'] as const;
+
+const strategyInput = z.object({
+  prompt: text(2000),
+  product: productFactSchema.optional(),
+  budgetUsd: z.number().positive().optional(),
+  targetChannels: z.array(z.enum(CHANNELS)).min(1).max(6).default([...CHANNELS]),
+  approvedDiscountPct: briefBase.approvedDiscountPct,
+  durationDays: z.number().int().min(1).max(365).default(30),
+});
+
+const strategyOutput = z
+  .object({
+    name: text(120),
+    summary: bilingualText(600),
+    objectives: objectivesOutput.shape.objectives,
+    audienceSegments: z
+      .array(
+        z
+          .object({
+            name: text(80),
+            description: text(500),
+            channels: z.array(z.enum(CHANNELS)).min(1),
+            messagingAngle: bilingualText(300),
+          })
+          .strict()
+      )
+      .min(1)
+      .max(5),
+    recommendedChannels: z
+      .array(z.object({ channel: z.enum(CHANNELS), rationale: text(400), budgetSharePct: z.number().min(0).max(100) }).strict())
+      .min(1)
+      .max(6),
+    postConcepts: z
+      .array(
+        z
+          .object({ channel: z.enum(CHANNELS), format: z.enum(POST_FORMATS), hook: bilingualText(150), description: bilingualText(600) })
+          .strict()
+      )
+      .min(1)
+      .max(10),
+  })
+  .strict();
+
+type StrategyInput = z.output<typeof strategyInput>;
+export type CampaignStrategy = z.output<typeof strategyOutput>;
+
+export const campaignStrategyTemplate: MarketingPromptTemplate<StrategyInput, CampaignStrategy> = {
+  key: 'campaign_strategy',
+  version: 1,
+  description: 'Full campaign strategy: objectives, audience segments, channel mix and bilingual post concepts.',
+  inputSchema: strategyInput,
+  outputSchema: strategyOutput,
+  outputSchemaFor(input) {
+    const allowed = new Set(input.targetChannels);
+    return strategyOutput.superRefine((s, ctx) => {
+      const flag = (path: (string | number)[], channel: string) => {
+        if (!allowed.has(channel as (typeof CHANNELS)[number])) {
+          ctx.addIssue({ code: 'custom', path, message: `Channel ${channel} is not one of the requested channels (${input.targetChannels.join(', ')})` });
+        }
+      };
+      const recommended = new Set<string>();
+      s.recommendedChannels.forEach((c, i) => {
+        flag(['recommendedChannels', i, 'channel'], c.channel);
+        if (recommended.has(c.channel)) ctx.addIssue({ code: 'custom', path: ['recommendedChannels', i], message: `Duplicate channel ${c.channel}` });
+        recommended.add(c.channel);
+      });
+      s.audienceSegments.forEach((seg, i) => seg.channels.forEach((c, j) => flag(['audienceSegments', i, 'channels', j], c)));
+      s.postConcepts.forEach((p, i) => {
+        if (!recommended.has(p.channel)) {
+          ctx.addIssue({ code: 'custom', path: ['postConcepts', i, 'channel'], message: `Concept channel ${p.channel} is not in recommendedChannels` });
+        }
+      });
+      s.objectives.forEach((o, i) => {
+        if (o.timeframeDays > input.durationDays) {
+          ctx.addIssue({ code: 'custom', path: ['objectives', i, 'timeframeDays'], message: `Must be ≤ ${input.durationDays}` });
+        }
+      });
+      if (input.budgetUsd) {
+        const total = s.recommendedChannels.reduce((a, c) => a + c.budgetSharePct, 0);
+        if (Math.abs(total - 100) > 1) {
+          ctx.addIssue({ code: 'custom', path: ['recommendedChannels'], message: `budgetSharePct must sum to 100 (got ${total})` });
+        }
+      }
+    });
+  },
+  build(input, brand, redactor) {
+    const lines = [
+      `request: ${fenceSafe(redactor.redact(input.prompt))}`,
+      `allowed channels: ${input.targetChannels.join(', ')}`,
+      `campaign duration: ${input.durationDays} days`,
+      input.budgetUsd ? `budget: $${input.budgetUsd.toFixed(2)} (split across channels via budgetSharePct summing to 100)` : 'budget: not specified',
+      discountLine(input.approvedDiscountPct),
+      ...productFactLines(input.product ? [input.product] : [], redactor),
+    ];
+    return {
+      system: sharedSystem(
+        brand,
+        [
+          'design a marketing campaign strategy.',
+          'Use only the allowed channels. Every postConcept channel must appear in recommendedChannels.',
+          `objectives: 1-5, KPI metric one of ${KPI_METRICS.join(', ')}, timeframeDays ≤ ${input.durationDays}.`,
+          'summary, messagingAngle, hook and description are bilingual {en, es}.',
+        ].join(' ')
+      ),
+      prompt: briefPrompt(
+        brand,
+        lines,
+        '{"name":string,"summary":{"en":string,"es":string},"objectives":[{"title":string,"description":string,"kpi":{"metric":string,"target":number,"unit":string},"timeframeDays":integer}],"audienceSegments":[{"name":string,"description":string,"channels":[string],"messagingAngle":{"en":string,"es":string}}],"recommendedChannels":[{"channel":string,"rationale":string,"budgetSharePct":number}],"postConcepts":[{"channel":string,"format":string,"hook":{"en":string,"es":string},"description":{"en":string,"es":string}}]}'
+      ),
+    };
+  },
+  review(output, brand, input) {
+    const pct = input.approvedDiscountPct;
+    const findings: ComplianceFinding[] = [
+      reviewFragment(output.summary.en, 'summary.en', 'EN', brand, pct),
+      reviewFragment(output.summary.es, 'summary.es', 'ES', brand, pct),
+    ];
+    output.audienceSegments.forEach((s, i) => {
+      findings.push(reviewFragment(s.messagingAngle.en, `audienceSegments.${i}.messagingAngle.en`, 'EN', brand, pct));
+      findings.push(reviewFragment(s.messagingAngle.es, `audienceSegments.${i}.messagingAngle.es`, 'ES', brand, pct));
+    });
+    output.postConcepts.forEach((p, i) => {
+      findings.push(reviewFragment(`${p.hook.en}\n${p.description.en}`, `postConcepts.${i}.en`, 'EN', brand, pct));
+      findings.push(reviewFragment(`${p.hook.es}\n${p.description.es}`, `postConcepts.${i}.es`, 'ES', brand, pct));
+    });
+    return combine(findings);
+  },
+};
+
 export const MARKETING_PROMPT_TEMPLATES = {
+  campaign_strategy: campaignStrategyTemplate,
   campaign_objectives: campaignObjectivesTemplate,
   headlines: headlinesTemplate,
   bilingual_copy: bilingualCopyTemplate,

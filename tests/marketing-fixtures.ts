@@ -42,3 +42,30 @@ export function makeBrand(input: BrandProfileInput = brandInput): BrandContext {
     terms: data.terms.map((t, n) => ({ id: `t${n}`, brandProfileId: 'bp1', createdAt: now, ...t })),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Scripted LLM adapter: reply is chosen per request (string, Error, or fn).
+// ---------------------------------------------------------------------------
+import { BaseProviderAdapter, type TextRequest, type TextResponse } from '../src/marketing/ai/provider';
+
+export class ScriptedAdapter extends BaseProviderAdapter {
+  readonly name = 'mock';
+  readonly model: string;
+  readonly requests: TextRequest[] = [];
+  constructor(
+    private reply: (req: TextRequest, n: number) => string | Error,
+    model = 'mock-1'
+  ) {
+    super();
+    this.model = model;
+  }
+  isConfigured() {
+    return true;
+  }
+  async generateText(req: TextRequest): Promise<TextResponse> {
+    this.requests.push(req);
+    const r = this.reply(req, this.requests.length);
+    if (r instanceof Error) throw r;
+    return { text: r, provider: this.name, model: this.model, stopReason: 'end_turn', usage: { inputTokens: 1, outputTokens: 1 }, requestId: null };
+  }
+}

@@ -1318,6 +1318,7 @@ enum MarketingContentType {
   BLOG
   VIDEO_SCRIPT
   HASHTAGS
+  POST_CONCEPT
 }
 
 enum MarketingAssetType {
@@ -1486,6 +1487,13 @@ model MarketingCampaign {
   createdById       String? // soft ref: User.id
   approvedById      String? // soft ref: User.id (ADMIN)
   approvedAt        DateTime?
+  budget            Decimal?                @db.Decimal(14, 2)
+  /// The user brief the strategy was generated from.
+  sourcePrompt      String?                 @db.Text
+  /// AI strategy: objectives, audience segments, channel mix, summary.
+  strategy          Json?
+  /// Last inventory + margin safeguard evaluation (see marketing/ai/safeguards.ts).
+  safeguardSnapshot Json?
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
 
@@ -1523,6 +1531,11 @@ model MarketingContent {
   reviewedById    String? // soft ref: User.id
   reviewedAt      DateTime?
   rejectionReason String?
+  /// Pairs the EN and ES rows of one bilingual variant.
+  variantGroupId  String?
+  /// Terminology/compliance findings at generation time.
+  compliance      Json?
+  aiLogId         String? // soft ref: MarketingAiLog.id
   createdById     String? // soft ref: User.id
   createdAt       DateTime                @default(now())
   updatedAt       DateTime                @updatedAt
@@ -1531,6 +1544,7 @@ model MarketingContent {
 
   @@index([campaignId, status])
   @@index([status])
+  @@index([variantGroupId])
 }
 
 model MarketingAsset {

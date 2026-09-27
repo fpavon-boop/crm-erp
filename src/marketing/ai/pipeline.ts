@@ -128,7 +128,8 @@ export async function runMarketingPrompt<I, O>(
   };
 
   try {
-    const res = await provider.generateJSON({ ...request, signal: ctx.signal }, template.outputSchema);
+    const outputSchema = template.outputSchemaFor ? template.outputSchemaFor(parsedInput) : template.outputSchema;
+    const res = await provider.generateJSON({ ...request, signal: ctx.signal }, outputSchema);
     const compliance = template.review ? template.review(res.data, ctx.brand, parsedInput) : null;
     const latencyMs = now() - started;
     const logId = await audit.record({
