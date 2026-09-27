@@ -1803,3 +1803,41 @@ model MarketingPrompt {
 
   @@unique([key, version])
 }
+
+enum MarketingAiCallStatus {
+  SUCCESS
+  FAILED
+  VALIDATION_FAILED
+}
+
+/// One row per marketing AI pipeline call (success or failure). Separate from
+/// core AiGenerationLog / AiFeature so marketing never writes core audit
+/// tables. Stores a hash of the (already redacted) prompt, never the prompt
+/// or the model output, so no PII lands here.
+model MarketingAiLog {
+  id                String                     @id @default(cuid())
+  templateKey       String
+  templateVersion   Int
+  status            MarketingAiCallStatus
+  provider          String?
+  model             String?
+  attempts          Int                        @default(0)
+  fallbackUsed      Boolean                    @default(false)
+  latencyMs         Int
+  inputTokens       Int?
+  outputTokens      Int?
+  requestId         String?
+  promptHash        String
+  redactions        Json?
+  errorKind         String?
+  errorMessage      String?
+  complianceVerdict MarketingSafeguardVerdict?
+  campaignId        String? // soft ref: MarketingCampaign.id
+  contentId         String? // soft ref: MarketingContent.id
+  requestedById     String? // soft ref: User.id
+  createdAt         DateTime                   @default(now())
+
+  @@index([templateKey, createdAt])
+  @@index([status, createdAt])
+  @@index([campaignId])
+}

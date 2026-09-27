@@ -106,16 +106,30 @@ function briefBlock(brief: CopyBrief, redactor: Redactor): string {
       ? 'approved discount: NONE — do not mention any discount, sale, or percentage off'
       : `approved discount: ${brief.approvedDiscountPct}% — do not state any other or larger discount`
   );
-  for (const p of brief.productFacts ?? []) {
+  lines.push(...productFactLines(brief.productFacts, redactor));
+  return `<brief>\n${lines.join('\n')}\n</brief>`;
+}
+
+/** Brand voice (EN + ES) and paired glossary blocks, shared with the other
+ * marketing prompt templates (src/marketing/ai/prompt-templates.ts). */
+export function brandContextPrompt(brand: BrandContext): string {
+  return [localeBlock(brand, 'EN'), localeBlock(brand, 'ES'), glossaryBlock(brand)].join('\n\n');
+}
+
+/** Fence-safe, PII-redacted product fact lines (shared with other templates). */
+export function productFactLines(facts: ProductFact[] | undefined, redactor: Redactor): string[] {
+  const r = (s: string) => fenceSafe(redactor.redact(s));
+  return (facts ?? []).map((p) => {
     const parts = [`product: ${r(p.name)}`];
     if (p.sku) parts.push(`sku ${fenceSafe(p.sku)}`);
     if (p.listPrice != null) parts.push(`list price $${p.listPrice.toFixed(2)}`);
     if (p.promoPrice != null) parts.push(`promo price $${p.promoPrice.toFixed(2)}`);
     for (const h of p.highlights ?? []) parts.push(`fact: ${r(h)}`);
-    lines.push(parts.join('; '));
-  }
-  return `<brief>\n${lines.join('\n')}\n</brief>`;
+    return parts.join('; ');
+  });
 }
+
+export { fenceSafe };
 
 const OUTPUT_SHAPE = `{"en":{"headline":string,"body":string,"cta":string,"hashtags":string[]},"es":{"headline":string,"body":string,"cta":string,"hashtags":string[]}}`;
 

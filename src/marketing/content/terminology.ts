@@ -158,10 +158,13 @@ export interface ValidateCopyOptions {
   /** The campaign's safeguard-approved discount. `undefined`/`null` means no
    * discount is approved, so any discount claim in the copy is a BLOCK. */
   approvedDiscountPct?: number | null;
+  /** Default true. Turn off for short fragments (headlines, CTAs) that are
+   * never published on their own. */
+  checkDisclaimer?: boolean;
 }
 
 export function validateCopy(rawText: string, options: ValidateCopyOptions): TermValidation {
-  const { brand, language, channel, approvedDiscountPct } = options;
+  const { brand, language, channel, approvedDiscountPct, checkDisclaimer = true } = options;
   const text = rawText.normalize('NFC');
   const folded = fold(text);
   const issues: TermIssue[] = [];
@@ -252,7 +255,7 @@ export function validateCopy(rawText: string, options: ValidateCopyOptions): Ter
     }
   }
 
-  if (locale.requiredDisclaimer && !folded.includes(fold(locale.requiredDisclaimer.normalize('NFC').trim()))) {
+  if (checkDisclaimer && locale.requiredDisclaimer && !folded.includes(fold(locale.requiredDisclaimer.normalize('NFC').trim()))) {
     issues.push({
       code: 'MISSING_DISCLAIMER',
       severity: 'WARN',
