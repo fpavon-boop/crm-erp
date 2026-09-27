@@ -1259,3 +1259,498 @@ model ChannelReference {
   @@index([channel, externalProductId])
   @@index([channel, externalSku])
 }
+
+// =============================================================================
+// Marketing automation (docs/MARKETING_AUTOMATION_ARCHITECTURE.md)
+// =============================================================================
+//
+// Purely additive and isolated from the core ERP. Rules for this section:
+// - No Prisma relation to any core model. Products, variants, companies,
+//   contacts and users are referenced by plain String IDs ("soft
+//   references"), so nothing here adds a back-relation field to a core model
+//   or a foreign key that could cascade into, or block, a core delete.
+// - Relations exist only between Marketing* models.
+// - No core enum is extended; marketing defines its own.
+// - Platform credentials (Meta, TikTok, Canva, CapCut) are never stored here.
+//   They live in n8n; SocialAccount only records which n8n credential to use.
+
+/// Shared lifecycle for every reviewable marketing entity. AI output always
+/// enters as AI_GENERATED and must pass HUMAN_REVIEW -> APPROVED (ADMIN only)
+/// before it can be SCHEDULED or PUBLISHED.
+enum MarketingApprovalStatus {
+  DRAFT
+  AI_GENERATED
+  HUMAN_REVIEW
+  APPROVED
+  REJECTED
+  SCHEDULED
+  PUBLISHED
+  FAILED
+}
+
+enum MarketingChannel {
+  FACEBOOK
+  INSTAGRAM
+  TIKTOK
+  WHATSAPP
+  EMAIL
+  WEBSITE
+}
+
+enum SocialPlatform {
+  FACEBOOK
+  INSTAGRAM
+  TIKTOK
+}
+
+enum SocialAccountStatus {
+  ACTIVE
+  DISCONNECTED
+  REVOKED
+}
+
+enum MarketingContentType {
+  POST_COPY
+  CAPTION
+  AD_COPY
+  EMAIL
+  WHATSAPP_MESSAGE
+  BLOG
+  VIDEO_SCRIPT
+  HASHTAGS
+}
+
+enum MarketingAssetType {
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+}
+
+enum MarketingAssetSource {
+  UPLOAD
+  CANVA
+  CAPCUT
+  AI_GENERATED
+  N8N
+  EXTERNAL_URL
+}
+
+enum MarketingTemplateKind {
+  SOCIAL_POST
+  EMAIL
+  WHATSAPP
+  VIDEO
+  DESIGN
+}
+
+enum MarketingTemplateProvider {
+  INTERNAL
+  CANVA
+  CAPCUT
+  META_WHATSAPP
+}
+
+enum VideoRenderStatus {
+  NOT_STARTED
+  QUEUED
+  RENDERING
+  COMPLETED
+  FAILED
+}
+
+enum MarketingJobType {
+  CONTENT_GENERATION
+  VIDEO_RENDER
+  SOCIAL_PUBLISH
+  MESSAGE_SEND
+  ANALYTICS_SYNC
+}
+
+enum MarketingScheduleStatus {
+  PENDING
+  DISPATCHED
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum MarketingApprovalTarget {
+  CAMPAIGN
+  CONTENT
+  ASSET
+  VIDEO_PROJECT
+  SOCIAL_POST
+}
+
+enum MarketingSafeguardVerdict {
+  PASS
+  WARN
+  BLOCK
+}
+
+enum MarketingConsentStatus {
+  OPTED_IN
+  OPTED_OUT
+}
+
+model MarketingBrandProfile {
+  id              String   @id @default(cuid())
+  name            String
+  isDefault       Boolean  @default(false)
+  voice           String?
+  tone            String?
+  targetAudience  String?
+  guidelines      String?  @db.Text
+  bannedPhrases   String[]
+  defaultHashtags String[]
+  primaryColor    String?
+  secondaryColor  String?
+  logoUrl         String?
+  active          Boolean  @default(true)
+  createdById     String? // soft ref: User.id
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  campaigns MarketingCampaign[]
+  templates MarketingTemplate[]
+}
+
+model MarketingCampaign {
+  id                String                  @id @default(cuid())
+  name              String
+  objective         String?
+  description       String?                 @db.Text
+  status            MarketingApprovalStatus @default(DRAFT)
+  channels          MarketingChannel[]
+  brandProfileId    String?
+  brandProfile      MarketingBrandProfile?  @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+  audienceId        String?
+  audience          MarketingAudience?      @relation(fields: [audienceId], references: [id], onDelete: SetNull)
+  // Soft refs to Product.id / ProductVariant.id — checked by the read-only
+  // inventory + margin safeguard before approval and again before dispatch.
+  productIds        String[]
+  productVariantIds String[]
+  discountPct       Decimal?                @db.Decimal(5, 2)
+  startsAt          DateTime?
+  endsAt            DateTime?
+  createdById       String? // soft ref: User.id
+  approvedById      String? // soft ref: User.id (ADMIN)
+  approvedAt        DateTime?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  contents      MarketingContent[]
+  assets        MarketingAsset[]
+  videoProjects VideoProject[]
+  socialPosts   SocialPost[]
+  schedules     MarketingSchedule[]
+  analytics     MarketingAnalytics[]
+  approvals     CampaignApproval[]
+
+  @@index([status])
+  @@index([startsAt])
+}
+
+model MarketingContent {
+  id              String                  @id @default(cuid())
+  campaignId      String
+  campaign        MarketingCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  channel         MarketingChannel
+  type            MarketingContentType
+  title           String?
+  body            String                  @db.Text
+  hashtags        String[]
+  language        String                  @default("en")
+  version         Int                     @default(1)
+  status          MarketingApprovalStatus @default(DRAFT)
+  aiGenerated     Boolean                 @default(false)
+  aiModel         String?
+  promptId        String?
+  prompt          MarketingPrompt?        @relation(fields: [promptId], references: [id], onDelete: SetNull)
+  productIds      String[] // soft refs: Product.id
+  companyId       String? // soft ref: Company.id (1:1 personalised drafts)
+  contactId       String? // soft ref: Contact.id
+  reviewedById    String? // soft ref: User.id
+  reviewedAt      DateTime?
+  rejectionReason String?
+  createdById     String? // soft ref: User.id
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  socialPosts SocialPost[]
+
+  @@index([campaignId, status])
+  @@index([status])
+}
+
+model MarketingAsset {
+  id          String                  @id @default(cuid())
+  campaignId  String?
+  campaign    MarketingCampaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  type        MarketingAssetType
+  source      MarketingAssetSource
+  url         String
+  storageKey  String?
+  externalId  String? // e.g. Canva design id / CapCut export id
+  mimeType    String?
+  sizeBytes   Int?
+  width       Int?
+  height      Int?
+  durationSec Decimal?                @db.Decimal(8, 2)
+  checksum    String?
+  altText     String?
+  status      MarketingApprovalStatus @default(DRAFT)
+  productIds  String[] // soft refs: Product.id
+  createdById String? // soft ref: User.id
+  createdAt   DateTime                @default(now())
+  updatedAt   DateTime                @updatedAt
+
+  videoOutputs VideoProject[] @relation("VideoProjectOutput")
+  videoScenes  VideoScene[]
+
+  @@unique([source, externalId])
+  @@index([campaignId])
+}
+
+model MarketingTemplate {
+  id                 String                    @id @default(cuid())
+  name               String
+  kind               MarketingTemplateKind
+  provider           MarketingTemplateProvider @default(INTERNAL)
+  channel            MarketingChannel?
+  externalTemplateId String?
+  body               String?                   @db.Text
+  variables          Json?
+  brandProfileId     String?
+  brandProfile       MarketingBrandProfile?    @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+  active             Boolean                   @default(true)
+  createdAt          DateTime                  @default(now())
+  updatedAt          DateTime                  @updatedAt
+
+  videoProjects VideoProject[]
+
+  @@unique([provider, externalTemplateId])
+}
+
+model VideoProject {
+  id                String                  @id @default(cuid())
+  campaignId        String?
+  campaign          MarketingCampaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  templateId        String?
+  template          MarketingTemplate?      @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  title             String
+  aspectRatio       String                  @default("9:16")
+  targetDurationSec Int?
+  script            String?                 @db.Text
+  status            MarketingApprovalStatus @default(DRAFT)
+  renderStatus      VideoRenderStatus       @default(NOT_STARTED)
+  externalJobId     String?                 @unique // n8n execution / render job id
+  outputAssetId     String?
+  outputAsset       MarketingAsset?         @relation("VideoProjectOutput", fields: [outputAssetId], references: [id], onDelete: SetNull)
+  errorMessage      String?
+  createdById       String? // soft ref: User.id
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  scenes      VideoScene[]
+  socialPosts SocialPost[]
+
+  @@index([campaignId])
+  @@index([renderStatus])
+}
+
+model VideoScene {
+  id             String          @id @default(cuid())
+  videoProjectId String
+  videoProject   VideoProject    @relation(fields: [videoProjectId], references: [id], onDelete: Cascade)
+  order          Int
+  script         String?         @db.Text
+  voiceover      String?         @db.Text
+  onScreenText   String?
+  durationSec    Decimal?        @db.Decimal(8, 2)
+  assetId        String?
+  asset          MarketingAsset? @relation(fields: [assetId], references: [id], onDelete: SetNull)
+  productId      String? // soft ref: Product.id
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([videoProjectId, order])
+}
+
+/// No tokens are stored: `n8nCredentialRef` names the credential inside n8n
+/// that the publishing workflow should use.
+model SocialAccount {
+  id                String              @id @default(cuid())
+  platform          SocialPlatform
+  externalAccountId String
+  handle            String?
+  displayName       String?
+  n8nCredentialRef  String?
+  status            SocialAccountStatus @default(ACTIVE)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  posts SocialPost[]
+
+  @@unique([platform, externalAccountId])
+}
+
+model SocialPost {
+  id              String                  @id @default(cuid())
+  socialAccountId String
+  socialAccount   SocialAccount           @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
+  campaignId      String?
+  campaign        MarketingCampaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  contentId       String?
+  content         MarketingContent?       @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  videoProjectId  String?
+  videoProject    VideoProject?           @relation(fields: [videoProjectId], references: [id], onDelete: SetNull)
+  mediaAssetIds   String[] // MarketingAsset ids, in display order
+  caption         String?                 @db.Text
+  status          MarketingApprovalStatus @default(DRAFT)
+  scheduledFor    DateTime?
+  publishedAt     DateTime?
+  externalPostId  String?
+  permalink       String?
+  errorMessage    String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  schedules MarketingSchedule[]
+  analytics MarketingAnalytics[]
+
+  @@unique([socialAccountId, externalPostId])
+  @@index([status, scheduledFor])
+  @@index([campaignId])
+}
+
+/// Outbox for work handed to n8n (architecture doc §4.1). `id` doubles as the
+/// X-Mkt-Job-Id idempotency key sent with each dispatch.
+model MarketingSchedule {
+  id           String                  @id @default(cuid())
+  jobType      MarketingJobType
+  status       MarketingScheduleStatus @default(PENDING)
+  runAt        DateTime
+  campaignId   String?
+  campaign     MarketingCampaign?      @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  socialPostId String?
+  socialPost   SocialPost?             @relation(fields: [socialPostId], references: [id], onDelete: SetNull)
+  n8nWorkflow  String?
+  payload      Json?
+  result       Json?
+  attempt      Int                     @default(0)
+  maxAttempts  Int                     @default(3)
+  lastError    String?
+  dispatchedAt DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  @@index([status, runAt])
+  @@index([campaignId])
+}
+
+model MarketingAnalytics {
+  id                String             @id @default(cuid())
+  campaignId        String?
+  campaign          MarketingCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  socialPostId      String?
+  socialPost        SocialPost?        @relation(fields: [socialPostId], references: [id], onDelete: SetNull)
+  channel           MarketingChannel
+  periodStart       DateTime
+  periodEnd         DateTime
+  impressions       Int                @default(0)
+  reach             Int                @default(0)
+  clicks            Int                @default(0)
+  engagements       Int                @default(0)
+  videoViews        Int                @default(0)
+  conversions       Int                @default(0)
+  spend             Decimal?           @db.Decimal(14, 2)
+  // Attributed revenue is computed read-only from core orders and stored
+  // here as a snapshot only — never written back to core.
+  attributedRevenue Decimal?           @db.Decimal(14, 2)
+  raw               Json?
+  capturedAt        DateTime           @default(now())
+
+  @@index([campaignId, periodStart])
+  @@index([socialPostId, periodStart])
+}
+
+/// Append-only decision log. `decidedById` must be an ADMIN (enforced in the
+/// approvals service). The safeguard verdict at decision time is snapshotted.
+model CampaignApproval {
+  id                   String                     @id @default(cuid())
+  campaignId           String
+  campaign             MarketingCampaign          @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  targetType           MarketingApprovalTarget
+  targetId             String
+  fromStatus           MarketingApprovalStatus
+  toStatus             MarketingApprovalStatus
+  decidedById          String // soft ref: User.id
+  comment              String?
+  safeguardVerdict     MarketingSafeguardVerdict?
+  safeguardSnapshot    Json?
+  warningsAcknowledged Boolean                    @default(false)
+  createdAt            DateTime                   @default(now())
+
+  @@index([campaignId, createdAt])
+  @@index([targetType, targetId])
+}
+
+/// Rule-based audience for WhatsApp/Email. Members are resolved at send time
+/// and filtered to contacts with an OPTED_IN MarketingConsent for `channel`.
+model MarketingAudience {
+  id             String           @id @default(cuid())
+  name           String
+  description    String?
+  channel        MarketingChannel
+  criteria       Json
+  lastSizeCount  Int?
+  lastComputedAt DateTime?
+  createdById    String? // soft ref: User.id
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  campaigns MarketingCampaign[]
+}
+
+/// Per-contact, per-channel opt-in record. Absence of a row means NO consent.
+model MarketingConsent {
+  id          String                 @id @default(cuid())
+  contactId   String // soft ref: Contact.id
+  companyId   String? // soft ref: Company.id
+  channel     MarketingChannel
+  status      MarketingConsentStatus
+  source      String // e.g. "wordpress_form", "whatsapp_reply", "manual"
+  sourceRef   String? // e.g. WordPressLead.id
+  consentText String?
+  capturedAt  DateTime               @default(now())
+  revokedAt   DateTime?
+  updatedAt   DateTime               @updatedAt
+
+  @@unique([contactId, channel])
+  @@index([channel, status])
+}
+
+/// Versioned prompt library. Rows are immutable once used; edits create a
+/// new version under the same key.
+model MarketingPrompt {
+  id           String   @id @default(cuid())
+  key          String
+  version      Int      @default(1)
+  name         String
+  purpose      String?
+  systemPrompt String   @db.Text
+  userTemplate String   @db.Text
+  model        String?
+  maxTokens    Int?
+  variables    Json?
+  active       Boolean  @default(true)
+  createdById  String? // soft ref: User.id
+  createdAt    DateTime @default(now())
+
+  contents MarketingContent[]
+
+  @@unique([key, version])
+}
