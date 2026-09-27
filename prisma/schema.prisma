@@ -1394,26 +1394,75 @@ enum MarketingConsentStatus {
   OPTED_OUT
 }
 
+enum MarketingLanguage {
+  EN
+  ES
+}
+
+/// Language-neutral brand identity. Per-language voice/tone/banned phrases
+/// live in MarketingBrandLocale; the EN⇄ES glossary in MarketingBrandTerm.
+/// `bannedPhrases` here applies to every language.
 model MarketingBrandProfile {
-  id              String   @id @default(cuid())
+  id              String            @id @default(cuid())
   name            String
-  isDefault       Boolean  @default(false)
+  isDefault       Boolean           @default(false)
+  primaryLanguage MarketingLanguage @default(EN)
   voice           String?
   tone            String?
   targetAudience  String?
-  guidelines      String?  @db.Text
+  guidelines      String?           @db.Text
   bannedPhrases   String[]
   defaultHashtags String[]
   primaryColor    String?
   secondaryColor  String?
+  /// [{ name, hex, role }] — full palette; primary/secondaryColor mirror it.
+  colorPalette    Json?
   logoUrl         String?
-  active          Boolean  @default(true)
+  active          Boolean           @default(true)
   createdById     String? // soft ref: User.id
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
   campaigns MarketingCampaign[]
   templates MarketingTemplate[]
+  locales   MarketingBrandLocale[]
+  terms     MarketingBrandTerm[]
+}
+
+/// Approved brand definition for one language (one row each for EN and ES).
+model MarketingBrandLocale {
+  id                 String                @id @default(cuid())
+  brandProfileId     String
+  brandProfile       MarketingBrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  language           MarketingLanguage
+  voice              String
+  tone               String
+  tagline            String?
+  guidelines         String?               @db.Text
+  bannedPhrases      String[]
+  requiredDisclaimer String?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  @@unique([brandProfileId, language])
+}
+
+/// Approved terminology. Rows sharing a `conceptKey` are translations of the
+/// same concept (e.g. "brick-oven": EN "brick oven" / ES "horno de ladrillo").
+/// `discouraged` lists variants the validator flags with `term` as the fix.
+model MarketingBrandTerm {
+  id             String                @id @default(cuid())
+  brandProfileId String
+  brandProfile   MarketingBrandProfile @relation(fields: [brandProfileId], references: [id], onDelete: Cascade)
+  conceptKey     String
+  language       MarketingLanguage
+  term           String
+  discouraged    String[]
+  notes          String?
+  createdAt      DateTime              @default(now())
+
+  @@unique([brandProfileId, conceptKey, language])
+  @@index([brandProfileId, language])
 }
 
 model MarketingCampaign {

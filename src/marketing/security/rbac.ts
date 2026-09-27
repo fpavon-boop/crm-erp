@@ -7,7 +7,7 @@ import type { MarketingApprovalStatus } from '@prisma/client';
  *
  * Policy (architecture doc §6, decision 4):
  * - ADMIN: everything, and is the ONLY role that can approve, reject,
- *   schedule, publish, or manage social accounts / secrets.
+ *   schedule, publish, or manage social accounts / secrets / brand profiles.
  * - Every other role (SALES, OPERATIONS, ACCOUNTING): view, draft, and
  *   submit a draft for human review. Nothing that makes content go live.
  *
@@ -25,6 +25,7 @@ export const MARKETING_ACTIONS = [
   'publish',
   'manage_accounts',
   'manage_secrets',
+  'manage_brand',
 ] as const;
 
 export type MarketingAction = (typeof MARKETING_ACTIONS)[number];
@@ -36,6 +37,7 @@ export const ADMIN_ONLY_ACTIONS: ReadonlySet<MarketingAction> = new Set<Marketin
   'publish',
   'manage_accounts',
   'manage_secrets',
+  'manage_brand',
 ]);
 
 const STANDARD_ACTIONS: ReadonlySet<MarketingAction> = new Set<MarketingAction>(['view', 'draft', 'submit_for_review']);
