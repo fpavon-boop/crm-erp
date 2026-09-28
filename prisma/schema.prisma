@@ -1399,11 +1399,6 @@ enum MarketingSafeguardVerdict {
   BLOCK
 }
 
-enum MarketingConsentStatus {
-  OPTED_IN
-  OPTED_OUT
-}
-
 enum MarketingLanguage {
   EN
   ES
@@ -1535,8 +1530,6 @@ model MarketingContent {
   promptId        String?
   prompt          MarketingPrompt?        @relation(fields: [promptId], references: [id], onDelete: SetNull)
   productIds      String[] // soft refs: Product.id
-  companyId       String? // soft ref: Company.id (1:1 personalised drafts)
-  contactId       String? // soft ref: Contact.id
   reviewedById    String? // soft ref: User.id
   reviewedAt      DateTime?
   rejectionReason String?
@@ -1843,8 +1836,12 @@ model CampaignApproval {
   @@index([targetType, targetId])
 }
 
-/// Rule-based audience for WhatsApp/Email. Members are resolved at send time
-/// and filtered to contacts with an OPTED_IN MarketingConsent for `channel`.
+/// Audience DEFINITION only (filter rules over CRM contacts/companies). No
+/// member list and no consent state is stored here: recipients are resolved
+/// from the CRM at send time and consent/opt-out is read from the CRM
+/// (WordPressLead.consentGiven + the CommunicationLog timeline). Email /
+/// WhatsApp sends go through the core communications service only.
+/// See src/marketing/audiences/.
 model MarketingAudience {
   id             String           @id @default(cuid())
   name           String
@@ -1858,24 +1855,6 @@ model MarketingAudience {
   updatedAt      DateTime         @updatedAt
 
   campaigns MarketingCampaign[]
-}
-
-/// Per-contact, per-channel opt-in record. Absence of a row means NO consent.
-model MarketingConsent {
-  id          String                 @id @default(cuid())
-  contactId   String // soft ref: Contact.id
-  companyId   String? // soft ref: Company.id
-  channel     MarketingChannel
-  status      MarketingConsentStatus
-  source      String // e.g. "wordpress_form", "whatsapp_reply", "manual"
-  sourceRef   String? // e.g. WordPressLead.id
-  consentText String?
-  capturedAt  DateTime               @default(now())
-  revokedAt   DateTime?
-  updatedAt   DateTime               @updatedAt
-
-  @@unique([contactId, channel])
-  @@index([channel, status])
 }
 
 /// Versioned prompt library. Rows are immutable once used; edits create a
