@@ -1739,6 +1739,22 @@ model SocialPost {
   externalPostId  String?
   permalink       String?
   errorMessage    String?
+  language        MarketingLanguage       @default(EN)
+  /// Bumped on every edit; dispatch requires approvedVersion == version.
+  version         Int                     @default(1)
+  approvedVersion Int?
+  approvedById    String? // soft ref: User.id (ADMIN)
+  approvedAt      DateTime?
+  compliance      Json?
+  /// Stock/margin/price evaluation at approval; dispatch re-checks against it.
+  safeguardSnapshot Json?
+  /// The live MarketingSchedule job for this post (deterministic id).
+  dispatchJobId   String?                 @unique
+  /// Incremented only by an explicit retry after FAILED — part of the idempotency key.
+  dispatchGeneration Int                  @default(0)
+  /// Set when the signed package was accepted by n8n (phase DISPATCHED).
+  dispatchedAt    DateTime?
+  createdById     String? // soft ref: User.id
   createdAt       DateTime                @default(now())
   updatedAt       DateTime                @updatedAt
 
@@ -1767,6 +1783,10 @@ model MarketingSchedule {
   attempt      Int                     @default(0)
   maxAttempts  Int                     @default(3)
   lastError    String?
+  /// Stable key sent to n8n with every attempt (Idempotency-Key header).
+  idempotencyKey String?               @unique
+  /// SHA-256 of the dispatch package; identical across retries.
+  checksum     String?
   dispatchedAt DateTime?
   completedAt  DateTime?
   createdAt    DateTime                @default(now())

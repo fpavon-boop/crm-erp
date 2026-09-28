@@ -84,6 +84,15 @@ export function fakeMatches(row: FakeRow, where: FakeRow = {}): boolean {
       if ('in' in cond) return cond.in.includes(v);
       if ('has' in cond) return Array.isArray(v) && v.includes(cond.has);
       if ('not' in cond) return v !== cond.not;
+      if ('lte' in cond || 'gte' in cond || 'lt' in cond || 'gt' in cond) {
+        if (v == null) return false;
+        return (
+          (!('lte' in cond) || v <= cond.lte) &&
+          (!('gte' in cond) || v >= cond.gte) &&
+          (!('lt' in cond) || v < cond.lt) &&
+          (!('gt' in cond) || v > cond.gt)
+        );
+      }
     }
     return (v ?? null) === cond;
   });
@@ -126,6 +135,7 @@ export function fakeModel(prefix: string, defaults: FakeRow = {}, options: FakeM
     create: async ({ data }: FakeRow) => {
       const row: FakeRow = { id: data.id ?? `${prefix}_${++seq}`, createdAt: new Date(), updatedAt: new Date(), ...defaults };
       apply(row, data);
+      if (rows.has(row.id)) throw Object.assign(new Error('Unique constraint failed on (id)'), { code: 'P2002' });
       checkUnique(row);
       rows.set(row.id, row);
       return { ...row };
