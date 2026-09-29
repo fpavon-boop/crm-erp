@@ -97,8 +97,14 @@ export function fakeMatches(row: FakeRow, where: FakeRow = {}): boolean {
         );
       }
     }
-    return (v ?? null) === cond;
+    return same(v, cond);
   });
+}
+
+/** Value equality for scalars, Dates by timestamp (as Postgres compares them). */
+function same(a: unknown, b: unknown): boolean {
+  if (a instanceof Date || b instanceof Date) return a instanceof Date && b instanceof Date && a.getTime() === b.getTime();
+  return (a ?? null) === (b ?? null);
 }
 
 export interface FakeModelOptions {
@@ -123,7 +129,7 @@ export function fakeModel(prefix: string, defaults: FakeRow = {}, options: FakeM
   };
   const checkUnique = (row: FakeRow) => {
     for (const cols of options.unique ?? []) {
-      const clash = [...rows.values()].find((r) => r.id !== row.id && cols.every((c) => r[c] === row[c]));
+      const clash = [...rows.values()].find((r) => r.id !== row.id && cols.every((c) => row[c] != null && same(r[c], row[c])));
       if (clash) throw Object.assign(new Error(`Unique constraint failed on (${cols.join(', ')})`), { code: 'P2002' });
     }
   };

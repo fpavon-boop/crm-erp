@@ -9,6 +9,8 @@ import { classifyAspectRatio, validateMediaMetadata } from '@/marketing/assets/m
 import { recordPublishResult } from '@/marketing/publishing/post-service';
 import { defaultPublishingDeps, type PublishingDeps } from '@/marketing/publishing/deps';
 import { recordRenderEvent, defaultVideoDeps, type VideoDeps } from '@/marketing/videos/video-service';
+import { createAnalyticsService, metricsSnapshotSchema } from '@/marketing/analytics/service';
+import type { MarketingAnalyticsService } from '@/marketing/analytics/types';
 
 /**
  * Inbound n8n callbacks (POST /api/marketing/webhooks/n8n).
@@ -23,7 +25,7 @@ import { recordRenderEvent, defaultVideoDeps, type VideoDeps } from '@/marketing
  *     (e.g. its execution id + node) so its own retries dedupe. A processed
  *     event is never applied twice; a FAILED one may be reprocessed.
  *  5. Apply through the existing idempotent domain functions
- *     (recordPublishResult / recordRenderEvent).
+ *     (recordPublishResult / recordRenderEvent / analytics ingestSnapshot).
  *
  * Responses: 200 processed/ignored/duplicate · 409 same event in flight ·
  * 422 domain rejection (recorded FAILED; retrying won't help) · 500
@@ -56,6 +58,7 @@ const eventSchema = z.discriminatedUnion('type', [
     })
     .strict(),
   z.object({ eventId: id, type: z.literal('render.failed'), jobId: id, data: z.object({ error: z.string().max(5000).optional() }).strict().default({}) }).strict(),
+  metricsSnapshotSchema,
 ]);
 
 export type N8nEvent = z.output<typeof eventSchema>;
@@ -64,6 +67,7 @@ export interface InboundDeps {
   db: Pick<typeof prisma, 'marketingWebhookEvent' | 'videoProject' | 'marketingAsset'>;
   publishing: PublishingDeps;
   video: VideoDeps;
+  analytics: MarketingAnalyticsService;
   secret(): string | null;
   enabled(): boolean;
   now(): Date;
@@ -73,6 +77,7 @@ export const defaultInboundDeps: InboundDeps = {
   db: prisma,
   publishing: defaultPublishingDeps,
   video: defaultVideoDeps,
+  analytics: createAnalyticsService(),
   secret: () => {
     const s = process.env.MARKETING_N8N_INBOUND_SECRET;
     return s && s.length >= 32 ? s : null;
@@ -89,6 +94,10 @@ export interface InboundResponse {
 type Applied = { status: 'PROCESSED' | 'IGNORED'; outcome: Record<string, unknown> };
 
 async function apply(e: N8nEvent, deps: InboundDeps): Promise<Applied> {
+  if (e.type === 'metrics.snapshot') {
+    const r = await deps.analytics.ingestSnapshot(e);
+    return { status: r.applied ? 'PROCESSED' : 'IGNORED', outcome: { ...r } };
+  }
   if (e.type === 'post.published' || e.type === 'post.failed') {
     const r = await recordPublishResult(
       e.type === 'post.published'
@@ -99,7 +108,7 @@ async function apply(e: N8nEvent, deps: InboundDeps): Promise<Applied> {
     return { status: r.applied ? 'PROCESSED' : 'IGNORED', outcome: { ...r } };
   }
 
-  const project = await deps.db.videoProject.findFirst({ where: { externalJobId: e.jobId }, select: { id: true } });
+  const project = await deps.db.videoProject.findFirst({ where: { externalJobId: e.jobId! }, select: { id: true } });
   if (!project) return { status: 'IGNORED', outcome: { applied: false, reason: 'UNKNOWN_JOB' } };
 
   if (e.type === 'render.started') {

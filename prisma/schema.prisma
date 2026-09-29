@@ -1813,6 +1813,8 @@ model MarketingAnalytics {
   raw               Json?
   capturedAt        DateTime           @default(now())
 
+  /// One row per post per reporting period (re-reports update it in place).
+  @@unique([socialPostId, periodStart, periodEnd])
   @@index([campaignId, periodStart])
   @@index([socialPostId, periodStart])
 }

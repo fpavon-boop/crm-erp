@@ -12,6 +12,7 @@ import { IDEMPOTENCY_HEADER } from '@/marketing/publishing/packages';
 import type { PublishingDeps } from '@/marketing/publishing/deps';
 import type { VideoDeps } from '@/marketing/videos/video-service';
 import { canonicalJson } from '@/marketing/videos/payload';
+import { createAnalyticsService } from '@/marketing/analytics/service';
 import { fakeModel } from './marketing-fixtures';
 
 /**
@@ -251,6 +252,7 @@ describe('inbound n8n webhook handler', () => {
       db: w.db as never,
       publishing: w.deps,
       video: { db: w.db, now: w.deps.now } as unknown as VideoDeps,
+      analytics: createAnalyticsService({ db: w.db as never, now: w.deps.now }),
       secret: () => IN_SECRET,
       enabled: () => true,
       now: w.deps.now,
