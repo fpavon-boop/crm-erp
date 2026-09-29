@@ -2,17 +2,17 @@ import { Prisma, type MarketingSchedule } from '@prisma/client';
 import { toNumber } from '@/lib/format';
 import { redactText } from '@/marketing/security/redaction';
 import { evaluateCampaignSafeguards, type SafeguardEvaluation } from '@/marketing/campaigns/safeguard-gate';
+import { claimJob, deliverJob, DISPATCH_BACKOFF_MS, DISPATCH_LEASE_MS } from '@/marketing/scheduling/outbound';
 import { defaultPublishingDeps, type PublishingDeps } from './deps';
-import { buildDispatchPackage, signedDispatchRequest, type DispatchPackage } from './packages';
+import { buildDispatchPackage, type DispatchPackage } from './packages';
 import { buildPostContext, LIVE_CAMPAIGN_STATUSES, signOffProblems, socialPostPhase } from './post-service';
 
 /**
- * Social dispatch orchestrator — run by the marketing scheduler tick
- * (separate lease from the ERP automations tick; architecture doc §2).
+ * Social dispatch — the SOCIAL_PUBLISH half of the unified marketing
+ * dispatcher (src/marketing/scheduling/dispatcher.ts).
  *
- * For each due SOCIAL_PUBLISH job:
- *  1. Claim it (PENDING → DISPATCHED compare-and-set; a second worker gets
- *     count 0 and skips).
+ * For each due job:
+ *  1. Claim it (compare-and-set; a second worker gets nothing).
  *  2. Re-validate EVERYTHING immediately before sending — sign-off still
  *     valid, campaign still live, post/media still valid, and the campaign's
  *     stock + margin safeguards, plus a price-change check against the
@@ -20,18 +20,13 @@ import { buildPostContext, LIVE_CAMPAIGN_STATUSES, signOffProblems, socialPostPh
  *     nothing is sent.
  *  3. Build the platform package once and store it (payload + checksum);
  *     every retry re-sends those exact bytes.
- *  4. POST it to n8n signed (HMAC) with X-Mkt-Job-Id + Idempotency-Key.
- *     2xx or 409 (already received) → DISPATCHED. 5xx/network → back to
- *     PENDING with backoff until maxAttempts. Other 4xx → FAILED.
+ *  4. Deliver it signed via the shared outbound (scheduling/outbound.ts).
  *
- * Delivery is at-least-once; double-posting is prevented by the stable
- * idempotency key (n8n dedupes on it) and by recordPublishResult accepting
- * one externalPostId per job.
+ * Double-posting is prevented by the stable idempotency key (n8n dedupes on
+ * it) and by recordPublishResult accepting one externalPostId per job.
  */
 
-export const DISPATCH_BACKOFF_MS = [60_000, 5 * 60_000, 15 * 60_000];
-/** A DISPATCHED job with no ack after this is re-sent (same bytes, same key). */
-export const DISPATCH_LEASE_MS = 10 * 60_000;
+export { DISPATCH_BACKOFF_MS, DISPATCH_LEASE_MS };
 
 export type DispatchOutcome =
   | { jobId: string; outcome: 'DISPATCHED' | 'RETRY_SCHEDULED' | 'SKIPPED_CLAIMED' | 'CANCELLED_STALE' }
@@ -100,15 +95,9 @@ async function preflight(job: MarketingSchedule, deps: PublishingDeps) {
 export async function dispatchJob(job: MarketingSchedule, deps: PublishingDeps = defaultPublishingDeps): Promise<DispatchOutcome> {
   const now = deps.now();
 
-  // 1. Claim (PENDING, or a DISPATCHED job whose lease expired without an ack).
-  const leaseExpired = job.status === 'DISPATCHED' && job.dispatchedAt != null && now.getTime() - job.dispatchedAt.getTime() > DISPATCH_LEASE_MS;
-  if (job.status !== 'PENDING' && !leaseExpired) return { jobId: job.id, outcome: 'SKIPPED_CLAIMED' };
-  const { count } = await deps.db.marketingSchedule.updateMany({
-    where: { id: job.id, status: job.status, attempt: job.attempt },
-    data: { status: 'DISPATCHED', dispatchedAt: now, attempt: { increment: 1 } },
-  });
-  if (count !== 1) return { jobId: job.id, outcome: 'SKIPPED_CLAIMED' };
-  const attempt = job.attempt + 1;
+  // 1. Claim
+  const claim = await claimJob(deps.db, job, now);
+  if (!claim.claimed) return { jobId: job.id, outcome: 'SKIPPED_CLAIMED' };
 
   // 2. Re-validate
   const pre = await preflight(job, deps);
@@ -147,42 +136,23 @@ export async function dispatchJob(job: MarketingSchedule, deps: PublishingDeps =
     });
   }
 
-  // 4. Send
+  // 4. Deliver
   const url = deps.webhookUrl();
   if (!url) {
     await failJob(job, 'N8N_MARKETING_WEBHOOK_URL is not configured', deps, { failPost: false });
     return { jobId: job.id, outcome: 'FAILED', reason: 'N8N_MARKETING_WEBHOOK_URL is not configured' };
   }
-  const req = signedDispatchRequest(pkg, deps.signingSecret(), now.getTime());
-
-  let status: number;
-  try {
-    status = (await deps.send({ url, headers: req.headers, body: req.body })).status;
-  } catch (err) {
-    status = 0;
-    await deps.db.marketingSchedule.updateMany({ where: { id: job.id }, data: { lastError: redactText(String(err)).slice(0, 500) } });
-  }
-
-  if ((status >= 200 && status < 300) || status === 409) {
+  const result = await deliverJob(job, claim.attempt, url, pkg, deps);
+  if (result.kind === 'DELIVERED') {
     await deps.db.socialPost.updateMany({ where: { id: pre.post.id, dispatchJobId: job.id, status: 'SCHEDULED' }, data: { dispatchedAt: now } });
     return { jobId: job.id, outcome: 'DISPATCHED' };
   }
-
-  const retryable = status === 0 || status === 408 || status === 429 || status >= 500;
-  if (retryable && attempt < job.maxAttempts) {
-    const delay = DISPATCH_BACKOFF_MS[Math.min(attempt - 1, DISPATCH_BACKOFF_MS.length - 1)];
-    await deps.db.marketingSchedule.updateMany({
-      where: { id: job.id },
-      data: { status: 'PENDING', runAt: new Date(now.getTime() + delay), lastError: `n8n responded ${status || 'network error'}` },
-    });
-    return { jobId: job.id, outcome: 'RETRY_SCHEDULED' };
-  }
-  const reason = `n8n dispatch failed (${status || 'network error'}) after ${attempt} attempt(s)`;
-  await failJob(job, reason, deps, { failPost: true });
-  return { jobId: job.id, outcome: 'FAILED', reason };
+  if (result.kind === 'RETRY_SCHEDULED') return { jobId: job.id, outcome: 'RETRY_SCHEDULED' };
+  await failJob(job, result.reason, deps, { failPost: true });
+  return { jobId: job.id, outcome: 'FAILED', reason: result.reason };
 }
 
-/** One dispatcher pass: due PENDING jobs plus DISPATCHED jobs whose ack lease expired. */
+/** Due PENDING jobs plus DISPATCHED jobs whose ack lease expired. */
 export async function dispatchDueSocialPosts(options: { limit?: number } = {}, deps: PublishingDeps = defaultPublishingDeps) {
   const now = deps.now();
   const limit = Math.max(1, Math.min(100, options.limit ?? 25));
@@ -199,7 +169,7 @@ export async function dispatchDueSocialPosts(options: { limit?: number } = {}, d
   ]);
   const results: DispatchOutcome[] = [];
   for (const job of [...due, ...expired].slice(0, limit)) {
-    // Only re-send an expired lease if the post hasn't already been acked by n8n.
+    // Only re-send an expired lease if n8n never acknowledged the post.
     if (job.status === 'DISPATCHED' && job.socialPostId) {
       const post = await deps.db.socialPost.findUnique({ where: { id: job.socialPostId } });
       if (post?.dispatchedAt) continue;

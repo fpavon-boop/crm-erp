@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import type { MarketingApprovalStatus } from '@prisma/client';
 import { requireApiSession } from '@/lib/api-auth';
 import { prisma } from '@/lib/prisma';
+import { isMarketingEnabled } from './kill-switch';
 import { authorizeTransition, canPerform, isAdminOnly, requiredActionForTransition, type MarketingAction } from './rbac';
 
 /**
@@ -29,9 +30,7 @@ function forbidden() {
   return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
 }
 
-export function isMarketingEnabled(): boolean {
-  return process.env.MARKETING_ENABLED === 'true';
-}
+export { isMarketingEnabled };
 
 export async function requireMarketingAction(action: MarketingAction): Promise<MarketingAuthContext | NextResponse> {
   if (!isMarketingEnabled()) {

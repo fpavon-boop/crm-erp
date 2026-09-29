@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { z, ZodError } from 'zod';
 import { Prisma, type VideoProject, type VideoScene } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
@@ -14,6 +15,7 @@ import { CampaignSafeguardError } from '@/marketing/campaigns/errors';
 import { VIDEO_PLATFORM_RULES, SCENE_LIMITS, validateVideoProject, type VideoValidation } from './platform-rules';
 import { changedAssignments, planInsert, planMove, planRemove, planReorder, SequenceError, type SequencedScene } from './sequence';
 import { assembleRenderPayload, PayloadAssemblyError, type PayloadAsset, type RenderPayload } from './payload';
+import { resolvePublicAssetUrl } from '@/marketing/assets/signed-urls';
 
 /**
  * Video projects and their scene sequences.
@@ -71,6 +73,7 @@ export const defaultVideoDeps: VideoDeps = {
   safeguards: defaultSafeguardChecks,
   getBrand: defaultCampaignDeps.getBrand,
   loadProduct: defaultCampaignDeps.loadProduct,
+  resolveAssetUrl: (a) => resolvePublicAssetUrl(a),
   newId: defaultCampaignDeps.newId,
   now: () => new Date(),
 };
@@ -527,6 +530,16 @@ export async function transitionVideoProject(
 // Rendering
 // =============================================================================
 
+/** Deterministic render job identity: one key per (project, version, attempt),
+ * so a replayed start can never create a second job and n8n can dedupe on it. */
+export function videoRenderKey(projectId: string, version: number, attempt: number): string {
+  return `video-render:${projectId}:v${version}:a${attempt}`;
+}
+
+export function videoRenderJobId(key: string): string {
+  return `vr_${crypto.createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+}
+
 /** Values the system computes; callers can't override prices or discount. */
 const SYSTEM_TEMPLATE_KEYS = new Set(['price', 'promo_price', 'discount_pct', 'discount_badge', 'brand_name', 'product_sku']);
 
@@ -591,7 +604,8 @@ export async function startRender(
     durationSec: num(a.durationSec),
   });
 
-  const jobId = deps.newId();
+  const idempotencyKey = videoRenderKey(project.id, project.version, project.renderAttempts + 1);
+  const jobId = videoRenderJobId(idempotencyKey);
   let payload: RenderPayload;
   try {
     payload = assembleRenderPayload({
@@ -628,6 +642,8 @@ export async function startRender(
     await tx.marketingSchedule.create({
       data: {
         id: jobId,
+        idempotencyKey,
+        checksum: payload.checksum,
         jobType: 'VIDEO_RENDER',
         status: 'PENDING',
         runAt: now,

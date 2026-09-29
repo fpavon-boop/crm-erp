@@ -34,6 +34,8 @@ import {
   startRender,
   recordRenderEvent,
   videoPhase,
+  videoRenderJobId,
+  videoRenderKey,
   type VideoDeps,
 } from '@/marketing/videos/video-service';
 import { MarketingError } from '@/marketing/errors';
@@ -527,17 +529,19 @@ describe('video service', () => {
       { callbackUrl: 'https://crm.example.com/cb', templateValues: { cta_text: 'Shop now', discount_badge: '90% OFF', product_name: 'Oven Pro' } },
       s.deps
     );
-    expect(scheduleId).toBe('job_1');
+    const job1 = videoRenderJobId(videoRenderKey(s.projectId, (await getVideoProject(s.projectId, sales, s.deps)).project.version, 1));
+    expect(scheduleId).toBe(job1);
     expect(payload.template!.fields).toEqual({ product_name: 'Oven Pro', discount_badge: '15% OFF', cta_text: 'Shop now' }); // system discount wins
     expect(payload.audio!.url).toBe('https://cdn.example.com/a.mp3');
     expect(payload.project.totalDurationMs).toBe(30000);
 
-    const job = s.marketingSchedule.rows.get('job_1')!;
+    const job = s.marketingSchedule.rows.get(job1)!;
     expect(job).toMatchObject({ jobType: 'VIDEO_RENDER', status: 'PENDING', n8nWorkflow: 'video-render', campaignId: s.campaign.id });
     expect(job.payload.checksum).toBe(payload.checksum);
 
     const p = (await getVideoProject(s.projectId, sales, s.deps)).project;
-    expect(p).toMatchObject({ renderStatus: 'QUEUED', externalJobId: 'job_1', renderAttempts: 1 });
+    expect(p).toMatchObject({ renderStatus: 'QUEUED', externalJobId: job1, renderAttempts: 1 });
+    expect(job).toMatchObject({ idempotencyKey: videoRenderKey(s.projectId, p.version, 1), checksum: payload.checksum });
     expect(videoPhase(p)).toBe('RENDERING');
     await expectError(updateVideoProject(s.projectId, { title: 'x' }, sales, s.deps), 'INVALID_STATE', 409);
     await expectError(startRender(s.projectId, admin, {}, s.deps), 'INVALID_STATE', 409);
@@ -564,34 +568,35 @@ describe('video service', () => {
   it('render callbacks: stale/duplicate/out-of-order ignored, completion needs a video asset', async () => {
     const s = await seeded();
     await approve(s);
-    await startRender(s.projectId, admin, { templateValues: { cta_text: 'Shop' } }, s.deps);
+    const { scheduleId: job1 } = await startRender(s.projectId, admin, { templateValues: { cta_text: 'Shop' } }, s.deps);
 
     expect(await recordRenderEvent(s.projectId, { jobId: 'job_old', status: 'COMPLETED' }, s.deps)).toMatchObject({ applied: false, reason: 'STALE_JOB' });
-    expect(await recordRenderEvent(s.projectId, { jobId: 'job_1', status: 'RENDERING' }, s.deps)).toMatchObject({ applied: true, phase: 'RENDERING' });
-    expect(await recordRenderEvent(s.projectId, { jobId: 'job_1', status: 'RENDERING' }, s.deps)).toMatchObject({ applied: false, reason: 'DUPLICATE' });
-    await expectError(recordRenderEvent(s.projectId, { jobId: 'job_1', status: 'COMPLETED', outputAssetId: s.audio.id }, s.deps), 'INVALID_INPUT', 400);
+    expect(await recordRenderEvent(s.projectId, { jobId: job1, status: 'RENDERING' }, s.deps)).toMatchObject({ applied: true, phase: 'RENDERING' });
+    expect(await recordRenderEvent(s.projectId, { jobId: job1, status: 'RENDERING' }, s.deps)).toMatchObject({ applied: false, reason: 'DUPLICATE' });
+    await expectError(recordRenderEvent(s.projectId, { jobId: job1, status: 'COMPLETED', outputAssetId: s.audio.id }, s.deps), 'INVALID_INPUT', 400);
 
     const out = await s.marketingAsset.create({ data: { type: 'VIDEO', orientation: 'VERTICAL', url: 'https://cdn.example.com/out.mp4', durationSec: 30 } });
-    expect(await recordRenderEvent(s.projectId, { jobId: 'job_1', status: 'COMPLETED', outputAssetId: out.id }, s.deps)).toMatchObject({ applied: true, phase: 'COMPLETED' });
-    expect(s.marketingSchedule.rows.get('job_1')).toMatchObject({ status: 'COMPLETED' });
-    expect(await recordRenderEvent(s.projectId, { jobId: 'job_1', status: 'FAILED', error: 'late' }, s.deps)).toMatchObject({ applied: false, reason: 'TERMINAL_OR_OUT_OF_ORDER' });
+    expect(await recordRenderEvent(s.projectId, { jobId: job1, status: 'COMPLETED', outputAssetId: out.id }, s.deps)).toMatchObject({ applied: true, phase: 'COMPLETED' });
+    expect(s.marketingSchedule.rows.get(job1)).toMatchObject({ status: 'COMPLETED' });
+    expect(await recordRenderEvent(s.projectId, { jobId: job1, status: 'FAILED', error: 'late' }, s.deps)).toMatchObject({ applied: false, reason: 'TERMINAL_OR_OUT_OF_ORDER' });
     expect((await getVideoProject(s.projectId, sales, s.deps)).project).toMatchObject({ renderStatus: 'COMPLETED', outputAssetId: out.id });
   });
 
   it('failed renders can be retried (approval still valid) or sent back to DRAFT', async () => {
     const s = await seeded();
     await approve(s);
-    await startRender(s.projectId, admin, { templateValues: { cta_text: 'Shop' } }, s.deps);
-    await recordRenderEvent(s.projectId, { jobId: 'job_1', status: 'FAILED', error: 'CapCut timeout; contact ops@example.com' }, s.deps);
+    const { scheduleId: job1 } = await startRender(s.projectId, admin, { templateValues: { cta_text: 'Shop' } }, s.deps);
+    await recordRenderEvent(s.projectId, { jobId: job1, status: 'FAILED', error: 'CapCut timeout; contact ops@example.com' }, s.deps);
     const failed = (await getVideoProject(s.projectId, sales, s.deps)).project;
     expect(videoPhase(failed)).toBe('FAILED');
     expect(failed.errorMessage).not.toContain('ops@example.com');
 
     const retry = await startRender(s.projectId, admin, { templateValues: { cta_text: 'Shop' } }, s.deps);
-    expect(retry.scheduleId).toBe('job_2');
-    expect((await getVideoProject(s.projectId, sales, s.deps)).project).toMatchObject({ renderAttempts: 2, externalJobId: 'job_2' });
+    const job2 = retry.scheduleId;
+    expect(job2).not.toBe(job1);
+    expect((await getVideoProject(s.projectId, sales, s.deps)).project).toMatchObject({ renderAttempts: 2, externalJobId: job2 });
 
-    await recordRenderEvent(s.projectId, { jobId: 'job_2', status: 'FAILED' }, s.deps);
+    await recordRenderEvent(s.projectId, { jobId: job2, status: 'FAILED' }, s.deps);
     const back = await transitionVideoProject(s.projectId, 'DRAFT', sales, {}, s.deps);
     expect(back).toMatchObject({ status: 'DRAFT', renderStatus: 'NOT_STARTED', approvedVersion: null });
   });

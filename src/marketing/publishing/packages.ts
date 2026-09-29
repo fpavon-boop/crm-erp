@@ -4,7 +4,7 @@ import type { BrandContext } from '@/marketing/content/brand-profile';
 import { CHANNEL_CHAR_LIMITS, validateCopy } from '@/marketing/content/terminology';
 import { checkAssetForChannel } from '@/marketing/assets/media';
 import { canonicalJson } from '@/marketing/videos/payload';
-import { JOB_ID_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, signWebhook } from '@/marketing/security/signing';
+import { signedJobRequest, IDEMPOTENCY_HEADER } from '@/marketing/scheduling/outbound';
 
 /**
  * Pure building blocks for social publishing: idempotency keys, post
@@ -25,7 +25,7 @@ import { JOB_ID_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, signWebhook } from '
  */
 
 export const SOCIAL_PUBLISH_SCHEMA = 'marketing.social.publish/v1';
-export const IDEMPOTENCY_HEADER = 'idempotency-key';
+export { IDEMPOTENCY_HEADER };
 
 export function idempotencyKeyFor(postId: string, version: number, generation: number): string {
   return `social-post:${postId}:v${version}:g${generation}`;
@@ -200,16 +200,5 @@ export type DispatchPackage = ReturnType<typeof buildDispatchPackage>;
 /** Headers for one delivery attempt. The body must be the stored package
  * serialized canonically, so every retry is byte-identical. */
 export function signedDispatchRequest(pkg: DispatchPackage, secret: string, nowMs: number) {
-  const body = canonicalJson(pkg);
-  const { timestamp, signature } = signWebhook(body, secret, nowMs);
-  return {
-    body,
-    headers: {
-      'content-type': 'application/json',
-      [SIGNATURE_HEADER]: signature,
-      [TIMESTAMP_HEADER]: timestamp,
-      [JOB_ID_HEADER]: pkg.jobId,
-      [IDEMPOTENCY_HEADER]: pkg.idempotencyKey,
-    },
-  };
+  return signedJobRequest(pkg, pkg.jobId, pkg.idempotencyKey, secret, nowMs);
 }

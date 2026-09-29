@@ -80,6 +80,8 @@ type FakeRow = Record<string, any>;
 
 export function fakeMatches(row: FakeRow, where: FakeRow = {}): boolean {
   return Object.entries(where).every(([k, cond]) => {
+    if (k === 'OR') return (cond as FakeRow[]).some((w) => fakeMatches(row, w));
+    if (k === 'AND') return (cond as FakeRow[]).every((w) => fakeMatches(row, w));
     const v = row[k];
     if (cond && typeof cond === 'object' && !(cond instanceof Date) && !Array.isArray(cond)) {
       if ('in' in cond) return cond.in.includes(v);
@@ -141,7 +143,13 @@ export function fakeModel(prefix: string, defaults: FakeRow = {}, options: FakeM
       rows.set(row.id, row);
       return { ...row };
     },
-    findUnique: async ({ where }: FakeRow) => pick(rows.get(where.id)),
+    // Supports { id } and compound unique keys like { source_eventId: { source, eventId } }.
+    findUnique: async ({ where }: FakeRow) => {
+      if (where.id !== undefined) return pick(rows.get(where.id));
+      const flat: FakeRow = {};
+      for (const [k, v] of Object.entries(where)) Object.assign(flat, k.includes('_') && v && typeof v === 'object' ? v : { [k]: v });
+      return pick([...rows.values()].find((r) => fakeMatches(r, flat)));
+    },
     findFirst: async ({ where }: FakeRow) => pick([...rows.values()].find((r) => fakeMatches(r, where))),
     findMany: async ({ where, skip = 0, take, orderBy }: FakeRow = {}) =>
       sort([...rows.values()].filter((r) => fakeMatches(r, where)), orderBy)
