@@ -95,6 +95,8 @@ export const brandProfileInputSchema = z
       .transform(dedupeCaseInsensitive),
     colorPalette: z.array(paletteColorSchema).max(12).default([]),
     logoUrl: z.string().url().startsWith('https://').optional(),
+    /** Physical postal address for marketing email footers (CAN-SPAM). */
+    postalAddress: z.string().trim().min(10).max(300).optional(),
     locales: z.object({ EN: localeSchema, ES: localeSchema }),
     terms: z.array(termSchema).max(500).default([]),
   })
@@ -172,6 +174,7 @@ export interface BrandContext {
   defaultHashtags: string[];
   colorPalette: PaletteColor[];
   logoUrl: string | null;
+  postalAddress: string | null;
   locales: Record<MarketingLanguage, BrandLocaleDefinition>;
   terms: Record<MarketingLanguage, BrandTermDefinition[]>;
 }
@@ -232,6 +235,7 @@ export function toBrandContext(row: ProfileRow): BrandContext {
     defaultHashtags: row.defaultHashtags,
     colorPalette: parsePalette(row.colorPalette),
     logoUrl: row.logoUrl,
+    postalAddress: row.postalAddress,
     locales,
     terms,
   };
@@ -256,6 +260,7 @@ export function toProfileWriteData(p: ParsedBrandProfile) {
       primaryColor: color('primary'),
       secondaryColor: color('secondary'),
       logoUrl: p.logoUrl ?? null,
+      postalAddress: p.postalAddress ?? null,
     },
     locales: LANGUAGES.map((language) => ({
       language,

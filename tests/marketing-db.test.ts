@@ -43,6 +43,9 @@ describe('marketing module on a real database', () => {
   beforeAll(async () => {
     db = await startTestDb();
     process.env.DATABASE_URL = db.url; // before any module that imports '@/lib/prisma'
+    process.env.MARKETING_PUBLIC_BASE_URL = 'https://crm.example.com';
+    process.env.MARKETING_UNSUBSCRIBE_SECRET = 'u'.repeat(40);
+    process.env.MARKETING_MEDIA_URL_SECRET = 'm'.repeat(40);
     m = {
       brand: await import('../src/marketing/content/brand-profile'),
       engine: await import('../src/marketing/campaigns/engine'),
@@ -340,17 +343,27 @@ describe('marketing module on a real database', () => {
       db: P(),
       audience: audDeps,
       safeguards: pass,
+      getBrand: async () => brandCtx, // has postalAddress (fixture)
       senderDeps: { emailSender },
       now: () => now,
     };
-    expect(await code(m.messaging.sendCampaignMessage({ campaignId: campaign.id, contentId: content.id, audienceId: emailAud.id }, sales, msgDeps))).toBe('FORBIDDEN');
+    const send = (actor: { userId: string; role: string }, deps = msgDeps) =>
+      m.messaging.sendCampaignMessage({ campaignId: campaign.id, contentId: content.id, audienceId: emailAud.id }, actor, deps);
+    expect(await code(send(sales))).toBe('FORBIDDEN');
 
-    const first = await m.messaging.sendCampaignMessage({ campaignId: campaign.id, contentId: content.id, audienceId: emailAud.id }, realAdmin, msgDeps);
+    // CAN-SPAM: refused up front (nothing sent) without a postal address or unsubscribe signing.
+    expect(await code(send(realAdmin, { ...msgDeps, getBrand: async () => ({ ...brandCtx, postalAddress: null }) }))).toBe('BRAND_ADDRESS_REQUIRED');
+    expect(await code(send(realAdmin, { ...msgDeps, unsubscribeLink: () => null }))).toBe('UNSUBSCRIBE_NOT_CONFIGURED');
+    expect(emailSender).not.toHaveBeenCalled();
+
+    const first = await send(realAdmin);
     expect(first).toMatchObject({ eligible: 1, attempted: 1, sent: 1, alreadySent: 0, failed: 0 });
     expect(emailSender).toHaveBeenCalledTimes(1);
     const log = await P().communicationLog.findFirst({ where: { direction: 'OUTBOUND', contactId: ana.id } });
     expect(log).toMatchObject({ type: 'EMAIL', status: 'SENT', recipient: 'ana@example.com', templateKey: `marketing:${campaign.id}:${content.id}`, userId: adminUser.id });
-    expect(log!.body).toContain('Reply STOP to unsubscribe');
+    expect(log!.body).toContain('123 Main St, Hartford, CT 06103');
+    expect(log!.body).toMatch(/Unsubscribe: https:\/\/crm\.example\.com\/api\/marketing\/public\/unsubscribe\?t=/);
+    expect(log!.body).toContain('Or reply STOP.');
 
     const second = await m.messaging.sendCampaignMessage({ campaignId: campaign.id, contentId: content.id, audienceId: emailAud.id }, realAdmin, msgDeps);
     expect(second).toMatchObject({ sent: 0, alreadySent: 1 });
@@ -361,5 +374,37 @@ describe('marketing module on a real database', () => {
     expect(await counts()).toEqual(before);
     expect(await P().idempotencyKey.count({ where: { key: { startsWith: 'mkt-msg:' } } })).toBe(1);
     expect(await P().campaignApproval.count({ where: { campaignId: campaign.id, targetType: 'CONTENT' } })).toBe(2);
+
+    // ---- One-click unsubscribe, end to end through the public route ----
+    const link = log!.body!.match(/https:\/\/crm\.example\.com\/api\/marketing\/public\/unsubscribe\?t=(\S+)/)!;
+    const token = decodeURIComponent(link[1]);
+    const { GET, POST } = await import('../src/app/api/marketing/public/unsubscribe/route');
+    const { NextRequest } = await import('next/server');
+    const url = `http://localhost/api/marketing/public/unsubscribe?t=${encodeURIComponent(token)}`;
+    const inboundBefore = await P().communicationLog.count({ where: { contactId: ana.id, direction: 'INBOUND' } });
+
+    const confirm = await GET(new NextRequest(url));
+    expect(confirm.status).toBe(200);
+    expect(await confirm.text()).toContain('<form method="post">');
+    expect(await P().communicationLog.count({ where: { contactId: ana.id, direction: 'INBOUND' } })).toBe(inboundBefore); // GET never mutates
+
+    const form = new URLSearchParams({ t: token });
+    const done = await POST(new NextRequest('http://localhost/api/marketing/public/unsubscribe', { method: 'POST', body: form, headers: { 'content-type': 'application/x-www-form-urlencoded' } }));
+    expect(done.status).toBe(200);
+    const optOut = await P().communicationLog.findFirst({ where: { contactId: ana.id, direction: 'INBOUND', templateKey: 'marketing:unsubscribe' } });
+    expect(optOut).toMatchObject({ type: 'EMAIL', companyId: customer.id });
+
+    // Repeat click is idempotent; the CRM-derived consent now excludes Ana.
+    await POST(new NextRequest(url, { method: 'POST' }));
+    expect(await P().communicationLog.count({ where: { contactId: ana.id, templateKey: 'marketing:unsubscribe' } })).toBe(1);
+    const after = await m.audience.resolveAudience(emailAud.id, { db: P(), now: () => new Date() });
+    expect(after.eligible).toEqual([]);
+    expect(after.excluded.OPTED_OUT).toBe(2);
+
+    // Tampered / foreign tokens are rejected and record nothing.
+    const bad = await POST(new NextRequest(`http://localhost/api/marketing/public/unsubscribe?t=${encodeURIComponent(token.slice(0, -2) + 'xx')}`, { method: 'POST' }));
+    expect(bad.status).toBe(400);
+    expect(await P().communicationLog.count({ where: { templateKey: 'marketing:unsubscribe' } })).toBe(1);
+    expect(await counts()).toEqual(before);
   });
 });

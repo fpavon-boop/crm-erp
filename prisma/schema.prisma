@@ -1423,6 +1423,8 @@ model MarketingBrandProfile {
   /// [{ name, hex, role }] — full palette; primary/secondaryColor mirror it.
   colorPalette    Json?
   logoUrl         String?
+  /// Physical postal address printed in every marketing email (CAN-SPAM).
+  postalAddress   String?
   active          Boolean           @default(true)
   createdById     String? // soft ref: User.id
   createdAt       DateTime          @default(now())
@@ -1915,4 +1917,40 @@ model MarketingAiLog {
   @@index([templateKey, createdAt])
   @@index([status, createdAt])
   @@index([campaignId])
+}
+
+enum MarketingWebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  IGNORED
+  FAILED
+}
+
+/// Inbound n8n callbacks, deduplicated on (source, eventId). Marketing-owned:
+/// replay protection never writes the core IdempotencyKey table.
+model MarketingWebhookEvent {
+  id          String                      @id @default(cuid())
+  source      String
+  eventId     String
+  type        String
+  jobId       String?
+  status      MarketingWebhookEventStatus @default(RECEIVED)
+  attempts    Int                         @default(1)
+  outcome     Json?
+  error       String?
+  receivedAt  DateTime                    @default(now())
+  processedAt DateTime?
+
+  @@unique([source, eventId])
+  @@index([jobId])
+  @@index([status, receivedAt])
+}
+
+/// Lease lock for the marketing dispatcher (separate from the core
+/// ScheduledTickLock so marketing can never stall or be stalled by ERP ticks).
+model MarketingLock {
+  id        String    @id
+  lockedAt  DateTime?
+  runId     String?
+  updatedAt DateTime  @updatedAt
 }

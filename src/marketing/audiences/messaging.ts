@@ -6,7 +6,10 @@ import { canPerform } from '@/marketing/security/rbac';
 import { marketingErrors } from '@/marketing/errors';
 import { evaluateCampaignSafeguards, defaultSafeguardChecks, type SafeguardChecks } from '@/marketing/campaigns/safeguard-gate';
 import { CampaignSafeguardError } from '@/marketing/campaigns/errors';
+import type { BrandContext } from '@/marketing/content/brand-profile';
+import { defaultCampaignDeps } from '@/marketing/campaigns/engine';
 import { resolveAudience, type AudienceDeps } from './audience-service';
+import { unsubscribeUrl } from './unsubscribe';
 
 /**
  * Direct email / WhatsApp campaign messages.
@@ -24,26 +27,48 @@ import { resolveAudience, type AudienceDeps } from './audience-service';
  *
  * Idempotency: one key per (content version, contact) — re-running the same
  * send (a retry, a double click, a second batch) never messages anyone twice.
+ *
+ * Email compliance (CAN-SPAM): every email carries the brand's physical
+ * postal address and a per-recipient signed one-click unsubscribe link
+ * (unsubscribe.ts). If either is unavailable the whole send is refused
+ * before any message goes out.
  */
 
 export const MAX_RECIPIENTS_PER_CALL = 500;
 
-const FOOTER: Record<'en' | 'es', Record<'EMAIL' | 'WHATSAPP', string>> = {
+const COPY = {
   en: {
-    EMAIL: 'You are receiving this because you opted in on our website. Reply STOP to unsubscribe.',
-    WHATSAPP: 'Reply STOP to stop receiving these messages.',
+    why: 'You are receiving this because you opted in on our website.',
+    unsubscribe: 'Unsubscribe:',
+    reply: 'Or reply STOP.',
+    whatsapp: 'Reply STOP to stop receiving these messages.',
   },
   es: {
-    EMAIL: 'Recibe este correo porque lo autorizó en nuestro sitio web. Responda BAJA para darse de baja.',
-    WHATSAPP: 'Responda BAJA para no recibir más mensajes.',
+    why: 'Recibe este correo porque lo autorizó en nuestro sitio web.',
+    unsubscribe: 'Darse de baja:',
+    reply: 'O responda BAJA.',
+    whatsapp: 'Responda BAJA para no recibir más mensajes.',
   },
-};
+} as const;
+
+/** Email footer: brand + postal address + one-click unsubscribe (all required). */
+export function emailFooter(lang: 'en' | 'es', brandName: string, postalAddress: string, unsubscribeLink: string): string {
+  const c = COPY[lang];
+  return [`${brandName} · ${postalAddress}`, c.why, `${c.unsubscribe} ${unsubscribeLink}`, c.reply].join('\n');
+}
+
+export function whatsappFooter(lang: 'en' | 'es'): string {
+  return COPY[lang].whatsapp;
+}
 
 export interface MessagingDeps {
   /** idempotencyKey is the core table, read-only here (see the send loop). */
   db: Pick<typeof prisma, 'marketingCampaign' | 'marketingContent' | 'campaignApproval' | 'idempotencyKey'> & AudienceDeps['db'];
   audience: AudienceDeps;
   safeguards: SafeguardChecks;
+  getBrand(brandProfileId?: string | null): Promise<BrandContext | null>;
+  /** Signed one-click unsubscribe URL; null when not configured (email is then refused). */
+  unsubscribeLink(input: { contactId: string; channel: 'EMAIL' | 'WHATSAPP'; campaignId: string }): string | null;
   send: typeof sendCommunication;
   /** Passed straight to the core service (tests inject stub senders). */
   senderDeps?: Parameters<typeof sendCommunication>[1];
@@ -54,6 +79,8 @@ export const defaultMessagingDeps: MessagingDeps = {
   db: prisma,
   audience: { db: prisma, now: () => new Date() },
   safeguards: defaultSafeguardChecks,
+  getBrand: defaultCampaignDeps.getBrand,
+  unsubscribeLink: (i) => unsubscribeUrl(i),
   send: sendCommunication,
   now: () => new Date(),
 };
@@ -108,7 +135,22 @@ export async function sendCampaignMessage(
   const batch = resolution.eligible.slice(0, MAX_RECIPIENTS_PER_CALL);
   const lang = content.language === 'es' ? 'es' : 'en';
   const channel = audience.channel as 'EMAIL' | 'WHATSAPP';
-  const body = `${content.body}\n\n—\n${FOOTER[lang][channel]}`;
+
+  // Fail closed BEFORE sending anything if email compliance can't be met.
+  let brand: BrandContext | null = null;
+  if (channel === 'EMAIL') {
+    brand = await deps.getBrand(campaign.brandProfileId);
+    if (!brand?.postalAddress) {
+      throw marketingErrors.unprocessable('BRAND_ADDRESS_REQUIRED', "The campaign's brand profile needs a postal address for marketing email (CAN-SPAM)");
+    }
+    if (batch.length && !deps.unsubscribeLink({ contactId: batch[0].contactId, channel, campaignId: campaign.id })) {
+      throw marketingErrors.unprocessable('UNSUBSCRIBE_NOT_CONFIGURED', 'MARKETING_UNSUBSCRIBE_SECRET and MARKETING_PUBLIC_BASE_URL must be set to send marketing email');
+    }
+  }
+  const bodyFor = (contactId: string) =>
+    channel === 'EMAIL'
+      ? `${content.body}\n\n—\n${emailFooter(lang, brand!.name, brand!.postalAddress!, deps.unsubscribeLink({ contactId, channel, campaignId: campaign.id })!)}`
+      : `${content.body}\n\n—\n${whatsappFooter(lang)}`;
 
   let sent = 0;
   let alreadySent = 0;
@@ -128,7 +170,7 @@ export async function sendCampaignMessage(
         channel: channel === 'EMAIL' ? 'email' : 'whatsapp',
         to: r.address,
         subject: channel === 'EMAIL' ? content.title ?? campaign.name : null,
-        body,
+        body: bodyFor(r.contactId),
         templateKey: `marketing:${campaign.id}:${content.id}`,
         companyId: r.companyId,
         contactId: r.contactId,

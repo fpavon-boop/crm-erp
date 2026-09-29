@@ -15,6 +15,7 @@ export const brandInput: BrandProfileInput = {
   bannedPhrases: ['cheap', 'knock-off'],
   defaultHashtags: ['#BrickOven'],
   colorPalette: [{ name: 'Ember', hex: '#B5452A', role: 'primary' }],
+  postalAddress: '123 Main St, Hartford, CT 06103',
   locales: {
     EN: { voice: 'Expert craftsman', tone: 'Warm, confident', bannedPhrases: ['hot deal'], requiredDisclaimer: 'Prices subject to change.' },
     ES: { voice: 'Artesano experto', tone: 'Cálido y seguro', bannedPhrases: ['ganga'], requiredDisclaimer: 'Precios sujetos a cambios.' },
