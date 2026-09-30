@@ -713,3 +713,9 @@ export async function recordRenderEvent(projectId: string, event: unknown, deps:
   });
   return { applied: true as const, phase: videoPhase({ status: project.status, renderStatus: e.status }) };
 }
+
+/** Route guard: a scene id in a URL must belong to the project in that URL. */
+export async function assertSceneInProject(sceneId: string, projectId: string, deps: VideoDeps = defaultVideoDeps): Promise<void> {
+  const scene = await deps.db.videoScene.findUnique({ where: { id: sceneId }, select: { videoProjectId: true } });
+  if (!scene || scene.videoProjectId !== projectId) throw marketingErrors.notFound('Scene', sceneId);
+}

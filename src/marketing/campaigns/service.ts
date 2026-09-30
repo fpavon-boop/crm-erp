@@ -355,3 +355,11 @@ export async function deleteDraftCampaign(id: string, actor: Actor, deps: Campai
   if (history > 0) throw campaignErrors.invalidState('Campaign has review history and cannot be deleted');
   await deps.db.marketingCampaign.delete({ where: { id } });
 }
+
+/** Read-only: current stock + margin safeguard evaluation for a campaign. */
+export async function getCampaignSafeguards(id: string, actor: Actor, deps: CampaignEngineDeps = defaultCampaignDeps) {
+  requireRole(actor, 'view');
+  const campaign = await deps.db.marketingCampaign.findUnique({ where: { id }, select: { productIds: true, discountPct: true } });
+  if (!campaign) throw campaignErrors.notFound('Campaign', id);
+  return evaluateCampaignSafeguards(campaign.productIds, campaign.discountPct == null ? null : toNumber(campaign.discountPct), deps.safeguards, { now: deps.now });
+}

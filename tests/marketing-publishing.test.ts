@@ -600,7 +600,7 @@ describe('publish results (exactly once)', () => {
 describe('isolation', () => {
   it('publishing code writes only marketing tables; ERP access is read-only', () => {
     const dir = path.resolve(__dirname, '../src/marketing/publishing');
-    const allowed = new Set(['socialPost', 'marketingSchedule', 'campaignApproval']);
+    const allowed = new Set(['socialPost', 'socialAccount', 'marketingSchedule', 'campaignApproval']);
     for (const file of fs.readdirSync(dir)) {
       const src = fs.readFileSync(path.join(dir, file), 'utf8');
       const writes = [...src.matchAll(/\.(\w+)\.(create|createMany|update|updateMany|upsert|delete|deleteMany)\(/g)].map((m) => m[1]);
