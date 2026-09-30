@@ -60,6 +60,45 @@ function crmRequest(body: Record<string, unknown>) {
   return { json: { headers: req.headers, body: JSON.parse(req.body) }, raw: Buffer.from(req.body) };
 }
 
+/** Evaluates an n8n parameter ("={{ expr }}" or "=text {{ expr }} text") like n8n's expression engine does for these simple cases. */
+function evalParam(value: unknown, ctx: { json?: unknown; env?: Record<string, string>; execution?: unknown; $?: unknown }): unknown {
+  if (typeof value !== 'string' || !value.startsWith('=')) return value;
+  const tpl = value.slice(1);
+  const run = (expr: string) => new Function('$json', '$env', '$execution', '$', `return (${expr});`)(ctx.json, ctx.env ?? {}, ctx.execution ?? {}, ctx.$);
+  const whole = /^\{\{([\s\S]*)\}\}$/.exec(tpl.trim());
+  if (whole && !whole[1].includes('}}')) return run(whole[1]);
+  return tpl.replace(/\{\{([\s\S]*?)\}\}/g, (_, expr: string) => String(run(expr)));
+}
+
+/** A local stand-in for api.creatomate.com that records what the workflow sends. */
+async function mockCreatomate() {
+  const http = await import('node:http');
+  const requests: Array<{ path: string; headers: Record<string, unknown>; body: unknown }> = [];
+  const server = http.createServer((req, res) => {
+    let data = '';
+    req.on('data', (c) => (data += c));
+    req.on('end', () => {
+      requests.push({ path: req.url ?? '', headers: req.headers, body: JSON.parse(data || 'null') });
+      const ok = req.method === 'POST' && req.url === '/v1/renders' && req.headers.authorization === 'Bearer ck_test_123';
+      res.writeHead(ok ? 202 : 401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(ok ? [{ id: 'render-1', status: 'planned' }] : { error: 'unauthorized' }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  const { port } = server.address() as { port: number };
+  return { url: `http://127.0.0.1:${port}`, requests, close: () => new Promise<void>((r) => server.close(() => r())) };
+}
+
+const CREATOMATE_ENV = { CREATOMATE_API_KEY: 'ck_test_123', CREATOMATE_TEMPLATE_ID: 'tmpl_456' };
+
+const renderPkg = {
+  schema: 'marketing.video.render/v1',
+  jobId: 'vr-1',
+  project: { id: 'vp1', title: 'Oven promo', platform: 'TIKTOK' },
+  template: { fields: { product_name: 'Pizza Oven 36"', price: '$2,499.00', promo_price: '$2,249.00' } },
+  scenes: [{ asset: null }, { asset: { type: 'IMAGE', url: 'https://cdn.example.com/oven.jpg' } }],
+};
+
 const socialPkg = {
   schema: 'marketing.social.publish/v1',
   jobId: 'job-1',
@@ -137,14 +176,96 @@ describe('n8n workflows', () => {
     expect(verifyWebhook({ rawBody: signed.json.body, secret: IN, timestamp: signed.json.timestamp, signature: signed.json.signature }).ok).toBe(true);
   });
 
-  it('video-render normalizes provider output into render.completed and rejects non-https output', async () => {
+  it('video-render verifies CRM-signed render payloads', async () => {
     const wf = load('video-render.json');
-    const [done] = await runCode(wf, 'Build render.completed', { input: [{ json: { url: 'https://cdn.example.com/out.mp4', width: 1080, height: 1920, duration: 15.2, size: 1234 } }] });
-    expect(done.json.event).toEqual({ type: 'render.completed', data: { url: 'https://cdn.example.com/out.mp4', mimeType: 'video/mp4', width: 1080, height: 1920, durationSec: 15.2, sizeBytes: 1234 } });
-    await expect(runCode(wf, 'Build render.completed', { input: [{ json: { url: 'http://x/out.mp4', width: 1, height: 1, durationSec: 1 } }] })).rejects.toThrow(/https/);
-    const renderPkg = { schema: 'marketing.video.render/v1', jobId: 'vr-1' };
     const { json, raw } = crmRequest(renderPkg);
     expect((await runCode(wf, 'Verify CRM signature', { input: [{ json }], binary: raw }))[0].json.ok).toBe(true);
+  });
+
+  it('video-render maps the CRM render payload onto the Creatomate template elements', async () => {
+    const wf = load('video-render.json');
+    const nodes = { 'Verify CRM signature': [{ json: { pkg: renderPkg } }] };
+    const [mods] = await runCode(wf, 'Creatomate modifications', { input: [{ json: {} }], nodes, env: CREATOMATE_ENV });
+    expect(mods.json).toEqual({ title: 'Pizza Oven 36"', price: '$2,249.00', imageUrl: 'https://cdn.example.com/oven.jpg' });
+
+    // Falls back to the project title and the list price.
+    const plain = { ...renderPkg, template: { fields: { price: '$2,499.00' } } };
+    const [fallback] = await runCode(wf, 'Creatomate modifications', { input: [{ json: {} }], nodes: { 'Verify CRM signature': [{ json: { pkg: plain } }] }, env: CREATOMATE_ENV });
+    expect(fallback.json).toMatchObject({ title: 'Oven promo', price: '$2,499.00' });
+
+    const noImage = { ...renderPkg, scenes: [{ asset: { type: 'VIDEO', url: 'https://cdn.example.com/clip.mp4' } }] };
+    await expect(runCode(wf, 'Creatomate modifications', { input: [{ json: {} }], nodes: { 'Verify CRM signature': [{ json: { pkg: noImage } }] }, env: CREATOMATE_ENV })).rejects.toThrow(/Product_Image/);
+    await expect(runCode(wf, 'Creatomate modifications', { input: [{ json: {} }], nodes })).rejects.toThrow(/CREATOMATE_API_KEY/);
+  });
+
+  it('video-render sends Creatomate the exact render request (mock Creatomate server)', async () => {
+    const wf = load('video-render.json');
+    const node = wf.nodes.find((n) => n.name === 'Creatomate: create render')!;
+    const ctx = {
+      json: { title: 'Pizza Oven 36"', price: '$2,249.00', imageUrl: 'https://cdn.example.com/oven.jpg' },
+      env: CREATOMATE_ENV,
+      execution: { id: '77', resumeUrl: 'https://n8n.example.com/webhook-waiting/77' },
+    };
+    const p = node.parameters;
+    expect(p.method).toBe('POST');
+    expect(evalParam(p.url, ctx)).toBe('https://api.creatomate.com/v1/renders');
+    const headers = Object.fromEntries(p.headerParameters.parameters.map((h: { name: string; value: string }) => [h.name, evalParam(h.value, ctx)]));
+    const body = evalParam(p.jsonBody, ctx) as string;
+
+    const mock = await mockCreatomate();
+    try {
+      const res = await fetch(mock.url + new URL(evalParam(p.url, ctx) as string).pathname, { method: p.method, headers: { ...headers, 'content-type': 'application/json' }, body });
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual([{ id: 'render-1', status: 'planned' }]);
+    } finally {
+      await mock.close();
+    }
+    expect(mock.requests).toHaveLength(1);
+    const req = mock.requests[0];
+    expect(req.path).toBe('/v1/renders');
+    expect(req.headers.authorization).toBe('Bearer ck_test_123');
+    expect(req.body).toEqual({
+      template_id: 'tmpl_456',
+      webhook_url: 'https://n8n.example.com/webhook-waiting/77',
+      modifications: { Product_Name: 'Pizza Oven 36"', Price: '$2,249.00', Product_Image: 'https://cdn.example.com/oven.jpg' },
+    });
+    // A retry would start (and bill) a second render.
+    expect((node as { retryOnFail?: boolean }).retryOnFail).not.toBe(true);
+
+    // The result is re-fetched from Creatomate's API with the same auth, by the created render's id.
+    const fetchNode = wf.nodes.find((n) => n.name === 'Creatomate: fetch render')!;
+    const fetchCtx = { ...ctx, $: (n: string) => ({ first: () => ({ json: n === 'Creatomate: create render' ? { id: 'render-1' } : {} }) }) };
+    expect(evalParam(fetchNode.parameters.url, fetchCtx)).toBe('https://api.creatomate.com/v1/renders/render-1');
+    expect(evalParam(fetchNode.parameters.headerParameters.parameters[0].value, fetchCtx)).toBe('Bearer ck_test_123');
+  });
+
+  it('video-render turns the fetched Creatomate render into render.completed / render.failed', async () => {
+    const wf = load('video-render.json');
+    const render = { id: 'render-1', status: 'succeeded', url: 'https://f002.backblazeb2.com/out.mp4', output_format: 'mp4', width: 1080, height: 1920, duration: 15.2, file_size: 1234567 };
+    const [done] = await runCode(wf, 'Build render.completed', { input: [{ json: render }] });
+    expect(done.json.event).toEqual({
+      type: 'render.completed',
+      data: { url: 'https://f002.backblazeb2.com/out.mp4', mimeType: 'video/mp4', width: 1080, height: 1920, durationSec: 15.2, sizeBytes: 1234567 },
+    });
+    await expect(runCode(wf, 'Build render.completed', { input: [{ json: { ...render, status: 'failed', error_message: 'Missing element' } }] })).rejects.toThrow('Creatomate render render-1 is failed: Missing element');
+    await expect(runCode(wf, 'Build render.completed', { input: [{ json: { ...render, status: 'rendering' } }] })).rejects.toThrow(/is rendering/);
+    await expect(runCode(wf, 'Build render.completed', { input: [{ json: { ...render, url: 'http://x/out.mp4' } }] })).rejects.toThrow(/https/);
+    const [failed] = await runCode(wf, 'Build render.failed', { input: [{ json: { error: 'Creatomate render render-1 is failed: Missing element' } }] });
+    expect(failed.json.event).toEqual({ type: 'render.failed', data: { error: 'Creatomate render render-1 is failed: Missing element' } });
+  });
+
+  it('video-render waits for the Creatomate webhook, then trusts only the API result', () => {
+    const wf = load('video-render.json');
+    const next = (from: string, output = 0) => (wf.connections[from]?.main[output] ?? []).map((e) => e.node);
+    expect(next('Send render.started')).toEqual(['Creatomate modifications']);
+    expect(next('Creatomate modifications', 1)).toEqual(['Build render.failed']);
+    expect(next('Creatomate: create render')).toEqual(['Wait for Creatomate webhook']);
+    expect(next('Creatomate: create render', 1)).toEqual(['Build render.failed']);
+    expect(next('Wait for Creatomate webhook')).toEqual(['Creatomate: fetch render']);
+    expect(next('Creatomate: fetch render')).toEqual(['Build render.completed']);
+    expect(next('Creatomate: fetch render', 1)).toEqual(['Build render.failed']);
+    const wait = wf.nodes.find((n) => n.name === 'Wait for Creatomate webhook')!;
+    expect(wait.parameters).toMatchObject({ resume: 'webhook', httpMethod: 'POST', limitWaitTime: true });
   });
 
   it('dispatch tick produces a request the CRM dispatch route verifies', async () => {

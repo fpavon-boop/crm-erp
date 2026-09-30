@@ -8,12 +8,12 @@
       "typeVersion": 1,
       "position": [
         -260,
-        -300
+        -320
       ],
       "parameters": {
-        "content": "## CRM → n8n: video render\nReceives `marketing.video.render/v1` payloads at `POST /webhook/video-render`, verifies the HMAC signature, answers **202**, reports `render.started`, sends the payload to your render service (`RENDER_API_URL`), then reports `render.completed` (https URL + width/height/duration) or `render.failed`.\n\n**Adapt \"Render service\"** to your provider (Creatomate, Shotstack, a CapCut/Canva automation…). It must return JSON: `{ url, width, height, durationSec, sizeBytes?, mimeType? }`.",
-        "width": 560,
-        "height": 260
+        "content": "## CRM → n8n: video render (Creatomate)\nReceives `marketing.video.render/v1` payloads at `POST /webhook/video-render`, verifies the HMAC signature, answers **202** and reports `render.started`.\n\nThen it starts a Creatomate render of `CREATOMATE_TEMPLATE_ID` (elements `Product_Name`, `Price`, `Product_Image`) with this execution's **Wait** URL as `webhook_url`, and pauses until Creatomate calls it (30 min limit). It then **re-fetches the render from the Creatomate API** (the webhook body is unsigned, so it is not trusted) and reports `render.completed` or `render.failed`.",
+        "width": 600,
+        "height": 300
       }
     },
     {
@@ -180,8 +180,8 @@
       }
     },
     {
-      "id": "01293e91-792d-0712-4c5b-d5416f4fea0a",
-      "name": "Render request",
+      "id": "b454cb0c-2052-fa34-5b73-e9006263c885",
+      "name": "Creatomate modifications",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
@@ -189,37 +189,86 @@
         20
       ],
       "parameters": {
-        "jsCode": "const pkg = $('Verify CRM signature').first().json.pkg;\nconst url = $env.RENDER_API_URL;\nif (!url) throw new Error('RENDER_API_URL is not set on n8n');\nreturn [{ json: { request: { url, body: pkg } } }];"
-      }
+        "jsCode": "// Maps the CRM render payload onto the Creatomate template's elements:\n// Product_Name / Price come from the CRM template fields (price already formatted,\n// promo price preferred), Product_Image from the first IMAGE asset in the scenes.\nif (!$env.CREATOMATE_API_KEY || !$env.CREATOMATE_TEMPLATE_ID) throw new Error('Set CREATOMATE_API_KEY and CREATOMATE_TEMPLATE_ID on n8n');\nconst pkg = $('Verify CRM signature').first().json.pkg;\nconst fields = (pkg.template && pkg.template.fields) || {};\nconst image = (pkg.scenes || []).map((s) => s.asset).find((a) => a && a.type === 'IMAGE');\nif (!image) throw new Error('The Creatomate template needs Product_Image: add an IMAGE asset to a scene');\nreturn [{ json: { title: fields.product_name || pkg.project.title, price: fields.promo_price || fields.price || '', imageUrl: image.url } }];"
+      },
+      "onError": "continueErrorOutput"
     },
     {
-      "id": "57c22ad6-1834-4058-781b-bdeb59db5e3d",
-      "name": "Render service",
+      "id": "c2205aa5-69a9-cfd2-0a2a-5d2e51fa39c9",
+      "name": "Creatomate: create render",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
         1760,
-        20
+        0
       ],
       "onError": "continueErrorOutput",
-      "retryOnFail": false,
-      "maxTries": 3,
-      "waitBetweenTries": 5000,
-      "credentials": {
-        "httpHeaderAuth": {
-          "name": "Render API (header)"
-        }
-      },
       "parameters": {
-        "method": "={{ $json.request.method || \"POST\" }}",
-        "url": "={{ $json.request.url }}",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "method": "POST",
+        "url": "https://api.creatomate.com/v1/renders",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env[\"CREATOMATE_API_KEY\"] }}"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify($json.request.body || {}) }}",
+        "jsonBody": "={{ JSON.stringify({ template_id: $env[\"CREATOMATE_TEMPLATE_ID\"], webhook_url: $execution.resumeUrl, modifications: { Product_Name: $json.title, Price: $json.price, Product_Image: $json.imageUrl } }) }}",
         "options": {
-          "timeout": 1800000
+          "timeout": 60000
+        }
+      }
+    },
+    {
+      "id": "c62efeb0-72c2-9d13-3865-f538201f455e",
+      "name": "Wait for Creatomate webhook",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1980,
+        -20
+      ],
+      "webhookId": "9684cd60-388d-0654-7e16-d20dc30f9c1e",
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 30,
+        "resumeUnit": "minutes",
+        "options": {}
+      }
+    },
+    {
+      "id": "07a16600-589e-0578-1f73-547b6a438f04",
+      "name": "Creatomate: fetch render",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        -20
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "url": "=https://api.creatomate.com/v1/renders/{{ $('Creatomate: create render').first().json.id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env[\"CREATOMATE_API_KEY\"] }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
         }
       }
     },
@@ -229,11 +278,11 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1980,
+        2420,
         -60
       ],
       "parameters": {
-        "jsCode": "// Normalizes the render service response into the CRM's render.completed contract.\nconst r = $input.first().json;\nconst out = r.output || r.result || r;\nconst data = {\n  url: out.url,\n  mimeType: out.mimeType || 'video/mp4',\n  width: Number(out.width),\n  height: Number(out.height),\n  durationSec: Number(out.durationSec ?? out.duration),\n};\nif (out.sizeBytes ?? out.size) data.sizeBytes = Number(out.sizeBytes ?? out.size);\nif (!/^https:\\/\\//.test(data.url || '')) throw new Error('Render output url must be https, got ' + data.url);\nfor (const k of ['width', 'height', 'durationSec']) if (!(data[k] > 0)) throw new Error('Render output missing ' + k);\nreturn [{ json: { event: { type: 'render.completed', data } } }];"
+        "jsCode": "// Uses the render as returned by Creatomate's API (the webhook body is not trusted).\nconst r = $input.first().json;\nif (r.status !== 'succeeded') throw new Error('Creatomate render ' + r.id + ' is ' + r.status + (r.error_message ? ': ' + r.error_message : ''));\nconst data = {\n  url: r.url,\n  mimeType: !r.output_format || r.output_format === 'mp4' ? 'video/mp4' : 'video/' + r.output_format,\n  width: Number(r.width),\n  height: Number(r.height),\n  durationSec: Number(r.duration),\n};\nif (r.file_size) data.sizeBytes = Number(r.file_size);\nif (!/^https:\\/\\//.test(data.url || '')) throw new Error('Render output url must be https, got ' + data.url);\nfor (const k of ['width', 'height', 'durationSec']) if (!(data[k] > 0)) throw new Error('Render output missing ' + k);\nreturn [{ json: { event: { type: 'render.completed', data } } }];"
       },
       "onError": "continueErrorOutput"
     },
@@ -243,8 +292,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1980,
-        200
+        2420,
+        220
       ],
       "parameters": {
         "jsCode": "const err = $input.first().json.error;\nconst msg = typeof err === 'string' ? err : (err && (err.message || err.description)) || JSON.stringify($input.first().json).slice(0, 1000);\nreturn [{ json: { event: { type: 'render.failed', data: { error: String(msg).slice(0, 4000) } } } }];"
@@ -256,7 +305,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2220,
+        2660,
         60
       ],
       "parameters": {
@@ -269,7 +318,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2440,
+        2880,
         60
       ],
       "retryOnFail": true,
@@ -379,25 +428,61 @@
       "main": [
         [
           {
-            "node": "Render request",
+            "node": "Creatomate modifications",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Render request": {
+    "Creatomate modifications": {
       "main": [
         [
           {
-            "node": "Render service",
+            "node": "Creatomate: create render",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build render.failed",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Render service": {
+    "Creatomate: create render": {
+      "main": [
+        [
+          {
+            "node": "Wait for Creatomate webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build render.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for Creatomate webhook": {
+      "main": [
+        [
+          {
+            "node": "Creatomate: fetch render",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Creatomate: fetch render": {
       "main": [
         [
           {
