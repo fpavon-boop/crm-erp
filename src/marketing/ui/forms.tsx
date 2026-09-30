@@ -9,7 +9,7 @@ import { callMarketingApi } from './client-api';
  * shows the API's validation message verbatim; the services own every rule.
  */
 
-export const CHANNELS = ['FACEBOOK', 'INSTAGRAM', 'TIKTOK', 'WHATSAPP', 'EMAIL', 'WEBSITE'] as const;
+import { CHANNELS } from './constants';
 const VIDEO_PLATFORMS = ['TIKTOK', 'INSTAGRAM_REELS', 'FACEBOOK_REELS'] as const;
 
 export interface Option {

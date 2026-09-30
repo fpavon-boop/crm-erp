@@ -5,7 +5,8 @@ import { formatDate } from '@/lib/format';
 import { listCampaigns } from '@/marketing/campaigns/service';
 import { pageParam, requireMarketingViewer } from '@/marketing/http/page';
 import StatusBadge from '@/marketing/ui/StatusBadge';
-import { CHANNELS, NewCampaignForm } from '@/marketing/ui/forms';
+import { NewCampaignForm } from '@/marketing/ui/forms';
+import { CHANNELS } from '@/marketing/ui/constants';
 
 const STATUSES = ['DRAFT', 'AI_GENERATED', 'HUMAN_REVIEW', 'APPROVED', 'REJECTED', 'SCHEDULED', 'PUBLISHED', 'FAILED'];
 
