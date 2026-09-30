@@ -6,12 +6,12 @@ import SearchBox from '@/components/SearchBox';
 
 export default function Header({ name, role }: { name: string; role: string }) {
   return (
-    <header className="h-16 shrink-0 bg-white border-b border-slate-200 flex items-center justify-between px-6 gap-4">
+    <header className="h-16 shrink-0 bg-white border-b border-slate-200 flex items-center justify-between pl-16 pr-4 md:px-6 gap-4">
       <div className="flex-1 max-w-md">
         <SearchBox />
       </div>
       <div className="flex items-center gap-4">
-        <div className="text-right">
+        <div className="text-right hidden sm:block">
           <div className="text-sm font-medium text-slate-800">{name}</div>
           <div className="text-xs text-slate-500">{role}</div>
         </div>
