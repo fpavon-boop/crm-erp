@@ -1,12 +1,13 @@
 # n8n workflows for CRM marketing
 
-Three ready-to-import workflows that connect the CRM's marketing module to n8n. All traffic in both directions is HMAC-signed: `x-mkt-signature: sha256=hex(HMAC_SHA256(secret, "<x-mkt-timestamp>.<raw body>"))`, with a 5-minute window.
+Four ready-to-import workflows that connect the CRM's marketing module to n8n. All traffic in both directions is HMAC-signed: `x-mkt-signature: sha256=hex(HMAC_SHA256(secret, "<x-mkt-timestamp>.<raw body>"))`, with a 5-minute window.
 
 | File | Trigger | What it does |
 |---|---|---|
 | `social-publish.json` | `POST /webhook/social-publish` (from the CRM) | Verifies the package, replies 202, publishes to Facebook, Instagram or TikTok, then calls back `post.published` or `post.failed`. |
 | `video-render.json` | `POST /webhook/video-render` (from the CRM) | Verifies the payload, replies 202, reports `render.started`, calls your render service, then reports `render.completed` or `render.failed`. |
 | `dispatch-tick.json` | Every minute | Sends a signed `POST {CRM_BASE_URL}/api/marketing/webhooks/dispatch` so the CRM dispatches due posts and queued renders. |
+| `sync-metrics.json` | Every 6 hours, or run manually | Sends signed engagement metrics per post (views, clicks, likes…) to `POST {CRM_BASE_URL}/api/marketing/webhooks/metrics`. The fetch step is a **simulation**; replace it with real insights calls. |
 
 Callbacks go to the `callback.url` inside each package, which is `{MARKETING_PUBLIC_BASE_URL}/api/marketing/webhooks/n8n`. If a package has no callback URL, the workflows fall back to `{CRM_BASE_URL}/api/marketing/webhooks/n8n`.
 
@@ -19,6 +20,7 @@ MARKETING_N8N_OUTBOUND_SECRET=<same value as the CRM>    # verifies CRM -> n8n
 MARKETING_N8N_INBOUND_SECRET=<same value as the CRM>     # signs n8n -> CRM
 CRM_BASE_URL=https://crm.example.com                     # public https origin of the CRM
 RENDER_API_URL=https://render.example.com/v1/render      # only for video-render
+SIMULATED_POST_IDS=<post id>,<post id>                  # only for sync-metrics while it is simulated
 TIKTOK_PRIVACY_LEVEL=SELF_ONLY                           # optional; PUBLIC_TO_EVERYONE once your TikTok app is audited
 NODE_FUNCTION_ALLOW_BUILTIN=crypto                       # lets the Code nodes use require('crypto')
 N8N_BLOCK_ENV_ACCESS_IN_NODE=false                       # lets the Code nodes read $env
@@ -62,4 +64,4 @@ Platform tokens live **only in n8n**, never in the CRM. The CRM's social account
 - Instagram waits 5 s (image) or 60 s (reel) before publishing. A long video that's still processing fails, and you can retry it from the CRM.
 - TikTok `PULL_FROM_URL` requires the media domain (`MARKETING_PUBLIC_BASE_URL`) to be verified in your TikTok developer app.
 - One Meta credential serves every Page it has tokens for. For separate business accounts, duplicate the branch with another credential.
-- There is no `metrics.snapshot` workflow yet. The CRM already accepts that event at the same callback URL (see `src/marketing/analytics/service.ts`).
+- `sync-metrics` only simulates platform data. The CRM endpoint accepts `{ eventId, postId, periodStart, periodEnd, metrics: { impressions, reach, views, clicks, likes, comments, shares, saves, conversions } }` for **PUBLISHED** posts (404 unknown post, 422 not published). Engagements are stored as likes + comments + shares + saves, and the per-type breakdown is kept in `raw`.

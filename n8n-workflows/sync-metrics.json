@@ -1,0 +1,172 @@
+{
+  "name": "CRM Marketing · Sync metrics (simulated)",
+  "nodes": [
+    {
+      "id": "6eab01a3-124a-7798-592f-6733739a41fc",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -320
+      ],
+      "parameters": {
+        "content": "## Platform → n8n → CRM: engagement metrics\nEvery 6 hours (or manually), builds yesterday's (UTC) metrics per post and POSTs each one, HMAC-signed with `MARKETING_N8N_INBOUND_SECRET`, to `{CRM_BASE_URL}/api/marketing/webhooks/metrics`.\n\n**Simulation:** \"Fetch platform metrics\" generates deterministic sample numbers for the CRM post ids in `SIMULATED_POST_IDS` (comma-separated, PUBLISHED posts). Replace it with real insights calls (Graph API `/{media-id}/insights`, TikTok `video/query`) returning the same item shape.",
+        "width": 560,
+        "height": 280
+      }
+    },
+    {
+      "id": "002dacf3-67dc-1cb7-6d61-36b0fba9f70e",
+      "name": "Every 6 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "8319d1bf-f92e-7bd9-6077-85295d6d71ba",
+      "name": "Run manually",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "5e54cc43-e156-301c-c277-803416139eaf",
+      "name": "Fetch platform metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// SIMULATION: deterministic per (post, day), so re-runs report the same numbers\n// (the CRM dedupes them) and a new day produces a new period row.\nconst crypto = require('crypto');\nconst ids = String($env.SIMULATED_POST_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);\nif (!ids.length) throw new Error('Set SIMULATED_POST_IDS on n8n (comma-separated CRM social post ids)');\n\nconst end = new Date();\nend.setUTCHours(0, 0, 0, 0); // yesterday, UTC, as a closed 24h period\nconst start = new Date(end.getTime() - 86400000);\n\nreturn ids.map((postId) => {\n  const seed = crypto.createHash('sha256').update(postId + ':' + start.toISOString()).digest();\n  const r = (i, max) => seed.readUInt16BE(i) % max;\n  const impressions = 500 + r(0, 5000);\n  const reach = Math.round(impressions * (0.6 + r(2, 30) / 100));\n  const metrics = {\n    impressions,\n    reach,\n    views: Math.round(reach * 0.8),\n    clicks: r(4, Math.max(1, Math.round(impressions * 0.05))),\n    likes: r(6, 400),\n    comments: r(8, 60),\n    shares: r(10, 40),\n    saves: r(12, 30),\n  };\n  return { json: { postId, periodStart: start.toISOString(), periodEnd: end.toISOString(), metrics, raw: { simulated: true } } };\n});"
+      }
+    },
+    {
+      "id": "d1c385fd-0488-4b16-9fc8-df22ee408b3b",
+      "name": "Sign metrics",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// One signed request per post. eventId = post + period + content hash: n8n retries and\n// re-runs dedupe in the CRM, while corrected numbers for the same period still apply.\nconst crypto = require('crypto');\nconst secret = $env.MARKETING_N8N_INBOUND_SECRET;\nconst base = ($env.CRM_BASE_URL || '').replace(/\\/$/, '');\nif (!secret || secret.length < 32) throw new Error('MARKETING_N8N_INBOUND_SECRET is not set on n8n');\nif (!/^https?:\\/\\//.test(base)) throw new Error('CRM_BASE_URL is not set on n8n');\n\nreturn $input.all().map(({ json: m }) => {\n  const hash = crypto.createHash('sha256').update(JSON.stringify(m.metrics)).digest('hex').slice(0, 16);\n  const payload = { eventId: 'metrics:' + m.postId + ':' + m.periodStart + ':' + hash, postId: m.postId, periodStart: m.periodStart, periodEnd: m.periodEnd, metrics: m.metrics, raw: m.raw };\n  const body = JSON.stringify(payload);\n  const timestamp = Math.floor(Date.now() / 1000).toString();\n  const signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + body).digest('hex');\n  return { json: { url: base + '/api/marketing/webhooks/metrics', body, timestamp, signature, postId: m.postId } };\n});"
+      }
+    },
+    {
+      "id": "cba0ee22-0fa0-d713-ab5f-9f3f2b79c82b",
+      "name": "Send to CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-mkt-timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "x-mkt-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every 6 hours": {
+      "main": [
+        [
+          {
+            "node": "Fetch platform metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run manually": {
+      "main": [
+        [
+          {
+            "node": "Fetch platform metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch platform metrics": {
+      "main": [
+        [
+          {
+            "node": "Sign metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign metrics": {
+      "main": [
+        [
+          {
+            "node": "Send to CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "active": false,
+  "tags": [
+    {
+      "name": "crm-erp-marketing"
+    }
+  ]
+}

@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
 import { verifyWebhook } from '@/marketing/security/signing';
 import { signedJobRequest } from '@/marketing/scheduling/outbound';
+import { startTestDb, type TestDb } from './test-db';
 
 /**
  * Contract tests for the importable n8n workflows in n8n-workflows/: their
@@ -151,5 +152,111 @@ describe('n8n workflows', () => {
     const [tick] = await runCode(wf, 'Sign tick', { input: [{ json: {} }], env: { CRM_BASE_URL: 'https://crm.example.com/' } });
     expect(tick.json.url).toBe('https://crm.example.com/api/marketing/webhooks/dispatch');
     expect(verifyWebhook({ rawBody: tick.json.body, secret: IN, timestamp: tick.json.timestamp, signature: tick.json.signature }).ok).toBe(true);
+  });
+});
+
+describe('sync-metrics workflow → POST /api/marketing/webhooks/metrics (real database)', () => {
+  let db: TestDb;
+  beforeAll(async () => {
+    db = await startTestDb();
+    // Before any dynamic import: the route's prisma client and secrets are read from env.
+    Object.assign(process.env, { DATABASE_URL: db.url, MARKETING_ENABLED: 'true', MARKETING_N8N_INBOUND_SECRET: IN });
+  }, 120000);
+  afterAll(async () => {
+    await db?.stop();
+  });
+
+  async function seedPublishedPost(status: 'PUBLISHED' | 'APPROVED' = 'PUBLISHED') {
+    const P = db.prisma;
+    const campaign = await P.marketingCampaign.create({ data: { name: 'Metrics loop', status: 'PUBLISHED' } });
+    const account = await P.socialAccount.create({ data: { platform: 'INSTAGRAM', externalAccountId: 'ig_' + Math.random().toString(36).slice(2) } });
+    const post = await P.socialPost.create({ data: { socialAccountId: account.id, campaignId: campaign.id, status, publishedAt: status === 'PUBLISHED' ? new Date() : null } });
+    const job = await P.marketingSchedule.create({ data: { jobType: 'SOCIAL_PUBLISH', runAt: new Date(), socialPostId: post.id, campaignId: campaign.id, status: 'COMPLETED' } });
+    await P.socialPost.update({ where: { id: post.id }, data: { dispatchJobId: job.id } });
+    return { campaign, post, job };
+  }
+
+  /** Runs the workflow's own Code nodes: simulated fetch → HMAC signing. */
+  async function workflowRequests(postIds: string[]) {
+    const wf = load('sync-metrics.json');
+    const env = { SIMULATED_POST_IDS: postIds.join(','), CRM_BASE_URL: 'https://crm.example.com' };
+    const fetched = await runCode(wf, 'Fetch platform metrics', { input: [{ json: {} }], env });
+    return runCode(wf, 'Sign metrics', { input: fetched, env });
+  }
+
+  async function deliver(item: { json: any }, override: { body?: string; signature?: string } = {}) {
+    const { POST } = await import('../src/app/api/marketing/webhooks/metrics/route');
+    const { NextRequest } = await import('next/server');
+    const res = await POST(
+      new NextRequest('http://localhost/api/marketing/webhooks/metrics', {
+        method: 'POST',
+        body: override.body ?? item.json.body,
+        headers: { 'content-type': 'application/json', 'x-mkt-timestamp': item.json.timestamp, 'x-mkt-signature': override.signature ?? item.json.signature },
+      })
+    );
+    return { status: res.status, body: await res.json() };
+  }
+
+  it('accepts a signed payload from the workflow and stores the mapped metrics for the post', async () => {
+    const { post, campaign } = await seedPublishedPost();
+    const [req] = await workflowRequests([post.id]);
+    expect(req.json.url).toBe('https://crm.example.com/api/marketing/webhooks/metrics');
+    const sent = JSON.parse(req.json.body);
+
+    const res = await deliver(req);
+    expect(res).toMatchObject({ status: 200, body: { ok: true, status: 'PROCESSED', outcome: { applied: true } } });
+
+    const rows = await db.prisma.marketingAnalytics.findMany({ where: { socialPostId: post.id } });
+    expect(rows).toHaveLength(1);
+    const m = sent.metrics;
+    expect(rows[0]).toMatchObject({
+      campaignId: campaign.id,
+      channel: 'INSTAGRAM',
+      impressions: m.impressions,
+      reach: m.reach,
+      clicks: m.clicks,
+      videoViews: m.views,
+      engagements: m.likes + m.comments + m.shares + m.saves,
+      conversions: 0,
+    });
+    expect(rows[0].periodStart.toISOString()).toBe(sent.periodStart);
+    expect(rows[0].raw).toMatchObject({ source: 'metrics-webhook', breakdown: { likes: m.likes }, platform: { simulated: true } });
+    expect(await db.prisma.marketingWebhookEvent.findFirst({ where: { eventId: sent.eventId } })).toMatchObject({ type: 'metrics.snapshot', status: 'PROCESSED' });
+  });
+
+  it('dedupes redelivery, and applies a correction for the same period as an update', async () => {
+    const { post } = await seedPublishedPost();
+    const [req] = await workflowRequests([post.id]);
+    await deliver(req);
+    expect((await deliver(req)).body).toMatchObject({ duplicate: true });
+
+    // Same period, different numbers → new content hash → new eventId → row updated, not duplicated.
+    const corrected = JSON.parse(req.json.body);
+    corrected.metrics.clicks += 7;
+    corrected.eventId += ':corrected';
+    const body = JSON.stringify(corrected);
+    const { signWebhook } = await import('../src/marketing/security/signing');
+    const signed = signWebhook(body, IN);
+    const res = await deliver({ json: { body, ...signed } });
+    expect(res.body).toMatchObject({ status: 'PROCESSED', outcome: { applied: true } });
+    const rows = await db.prisma.marketingAnalytics.findMany({ where: { socialPostId: post.id } });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].clicks).toBe(corrected.metrics.clicks);
+  });
+
+  it('rejects bad signatures, tampered bodies, unknown and unpublished posts without writing', async () => {
+    const { post } = await seedPublishedPost('APPROVED');
+    const before = await db.prisma.marketingAnalytics.count();
+    const [unpublished] = await workflowRequests([post.id]);
+    expect(await deliver(unpublished)).toMatchObject({ status: 422 });
+
+    const [unknown] = await workflowRequests(['post_does_not_exist']);
+    expect(await deliver(unknown)).toMatchObject({ status: 404 });
+
+    const { post: ok } = await seedPublishedPost();
+    const [req] = await workflowRequests([ok.id]);
+    expect(await deliver(req, { signature: 'sha256=' + '0'.repeat(64) })).toMatchObject({ status: 401, body: { reason: 'BAD_SIGNATURE' } });
+    expect(await deliver(req, { body: req.json.body.replace('"impressions":', '"impressions":1') })).toMatchObject({ status: 401 });
+    expect(await db.prisma.marketingAnalytics.count()).toBe(before);
   });
 });

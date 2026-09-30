@@ -183,10 +183,12 @@ async function claim(e: N8nEvent, deps: InboundDeps): Promise<{ rowId: string } 
   return count === 1 ? { rowId: existing.id } : { status: 409, body: { error: 'Event is being processed; retry later' } };
 }
 
-export async function handleN8nWebhook(
+/** Kill switch + HMAC check shared by every signed n8n → CRM endpoint. Returns
+ * the parsed JSON body, or the response to send instead. */
+export function authenticateInbound(
   req: { rawBody: string; headers: { get(name: string): string | null } },
-  deps: InboundDeps = defaultInboundDeps
-): Promise<InboundResponse> {
+  deps: Pick<InboundDeps, 'enabled' | 'secret' | 'now'>
+): { json: unknown } | InboundResponse {
   if (!deps.enabled()) return { status: 503, body: { error: 'Marketing module is disabled' } };
   const secret = deps.secret();
   if (!secret) return { status: 503, body: { error: 'Inbound webhook secret is not configured' } };
@@ -200,16 +202,15 @@ export async function handleN8nWebhook(
   });
   if (!check.ok) return { status: 401, body: { error: 'Unauthorized', reason: check.reason } };
 
-  let json: unknown;
   try {
-    json = JSON.parse(req.rawBody);
+    return { json: JSON.parse(req.rawBody) };
   } catch {
     return { status: 400, body: { error: 'Invalid JSON' } };
   }
-  const parsed = eventSchema.safeParse(json);
-  if (!parsed.success) return { status: 400, body: { error: 'Invalid event', issues: parsed.error.flatten() } };
-  const event = parsed.data;
+}
 
+/** Replay-protected processing of one validated event: claim → apply → record. */
+export async function processInboundEvent(event: N8nEvent, deps: InboundDeps): Promise<InboundResponse> {
   const claimed = await claim(event, deps);
   if (!('rowId' in claimed)) return claimed;
 
@@ -230,4 +231,15 @@ export async function handleN8nWebhook(
     console.error('[marketing-n8n] inbound processing failed:', err);
     return { status: 500, body: { error: 'Processing failed' } };
   }
+}
+
+export async function handleN8nWebhook(
+  req: { rawBody: string; headers: { get(name: string): string | null } },
+  deps: InboundDeps = defaultInboundDeps
+): Promise<InboundResponse> {
+  const auth = authenticateInbound(req, deps);
+  if (!('json' in auth)) return auth;
+  const parsed = eventSchema.safeParse(auth.json);
+  if (!parsed.success) return { status: 400, body: { error: 'Invalid event', issues: parsed.error.flatten() } };
+  return processInboundEvent(parsed.data, deps);
 }
