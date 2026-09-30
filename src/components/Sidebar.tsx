@@ -20,6 +20,7 @@ import {
   Globe,
   Settings,
   Zap,
+  Megaphone,
   ShieldCheck,
   Wallet,
   type LucideIcon,
@@ -51,6 +52,8 @@ const NAV: NavItem[] = [
   { href: '/whatsapp', label: 'WhatsApp', icon: MessageCircle, module: 'whatsapp' },
   { href: '/wordpress', label: 'WordPress', icon: Globe, module: 'wordpress' },
   { href: '/automations', label: 'Automations', icon: Zap, module: 'automations' },
+  // ADMIN-only via the settings module (no marketing module in permissions.ts); pages also re-check marketing RBAC.
+  { href: '/marketing', label: 'Marketing', icon: Megaphone, module: 'settings' },
   { href: '/audit-log', label: 'Audit Log', icon: ShieldCheck, module: 'settings' },
   { href: '/settings', label: 'Settings', icon: Settings, module: 'settings' },
 ];
