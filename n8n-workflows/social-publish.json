@@ -1,0 +1,799 @@
+{
+  "name": "CRM Marketing · Social publish",
+  "nodes": [
+    {
+      "id": "5daf7fef-61aa-38ac-2526-7bc5f2fcb322",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -260
+      ],
+      "parameters": {
+        "content": "## CRM → n8n: social publish\nReceives `marketing.social.publish/v1` packages from the CRM dispatcher at `POST /webhook/social-publish`, verifies the HMAC signature, answers **202** immediately, publishes to Facebook / Instagram / TikTok, then calls the CRM back with a signed `post.published` or `post.failed` event.\n\nThe CRM only sends ADMIN-approved, safeguard-checked posts. See `n8n-workflows/README.md`.",
+        "width": 520,
+        "height": 240
+      }
+    },
+    {
+      "id": "8dccd29c-f5de-3b44-424c-0251238bd131",
+      "name": "CRM webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        100
+      ],
+      "webhookId": "06770c0c-9e16-e512-221b-2ca40d46b3e7",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "social-publish",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "b6ea35de-d3d7-6ca3-70a3-8396e7e60870",
+      "name": "Verify CRM signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// Verifies the CRM's HMAC signature (MARKETING_N8N_OUTBOUND_SECRET) over the RAW body:\n// signature = \"sha256=\" + hex(HMAC_SHA256(secret, timestamp + \".\" + rawBody)), 5-minute window.\n// Also enforces the payload schema, matches x-mkt-job-id, and dedupes on the Idempotency-Key.\nconst crypto = require('crypto');\nconst secret = $env.MARKETING_N8N_OUTBOUND_SECRET;\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst fail = (status, reason) => [{ json: { ok: false, status, reason } }];\n\nlet raw;\ntry {\n  raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n} catch (e) {\n  // Webhook \"Raw Body\" disabled: the CRM sends canonical JSON, which re-serializes identically.\n  raw = JSON.stringify(item.json.body);\n}\n\nif (!secret || secret.length < 32) return fail(500, 'MARKETING_N8N_OUTBOUND_SECRET is not set on n8n');\nconst ts = headers['x-mkt-timestamp'];\nconst sig = headers['x-mkt-signature'];\nif (!ts || !sig) return fail(401, 'missing signature headers');\nif (!/^\\d{1,12}$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return fail(401, 'stale or invalid timestamp');\nconst expected = 'sha256=' + crypto.createHmac('sha256', secret).update(ts + '.' + raw).digest('hex');\nconst a = Buffer.from(String(sig));\nconst b = Buffer.from(expected);\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return fail(401, 'bad signature');\n\nlet pkg;\ntry {\n  pkg = JSON.parse(raw);\n} catch (e) {\n  return fail(400, 'body is not JSON');\n}\nif (pkg.schema !== 'marketing.social.publish/v1') return fail(400, 'unexpected schema ' + pkg.schema);\nif (headers['x-mkt-job-id'] && headers['x-mkt-job-id'] !== pkg.jobId) return fail(400, 'job id header does not match body');\n\n// At-least-once delivery from the CRM: answer 409 for a job we already accepted\n// (the CRM treats 409 as delivered). Static data persists for ACTIVE workflows.\nconst store = $getWorkflowStaticData('global');\nstore.jobs = store.jobs || {};\nconst key = headers['idempotency-key'] || pkg.jobId;\nif (store.jobs[key]) return fail(409, 'duplicate job ' + key);\nstore.jobs[key] = Date.now();\nconst keys = Object.keys(store.jobs);\nif (keys.length > 1000) keys.sort((x, y) => store.jobs[x] - store.jobs[y]).slice(0, keys.length - 1000).forEach((k) => delete store.jobs[k]);\n\nreturn [{ json: { ok: true, jobId: pkg.jobId, pkg } }];"
+      }
+    },
+    {
+      "id": "a775c48a-0324-f565-efff-ba863416300d",
+      "name": "Signature OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "83c1cd9e-23a1-d82f-d86d-e99933876148",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "7e66bce4-510f-5dcc-9c76-5c0149d93d59",
+      "name": "Reject",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: $json.reason }) }}",
+        "options": {
+          "responseCode": "={{ $json.status }}"
+        }
+      }
+    },
+    {
+      "id": "bc7ce45f-f60a-134c-f577-8cd7b7d7ded1",
+      "name": "Accept (202)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        20
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, jobId: $json.jobId }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    },
+    {
+      "id": "6204b204-1546-9b21-2835-6dbcae7d2d75",
+      "name": "Route by platform",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        20
+      ],
+      "parameters": {
+        "jsCode": "// One item per platform branch; media[0] decides photo vs video (carousels post the first item).\nconst pkg = $input.first().json.pkg;\nconst media = (pkg.media || [])[0] || null;\nconst caption = pkg.post.caption || '';\nconst acct = pkg.account.externalAccountId;\nlet request = null;\nif (pkg.platform === 'FACEBOOK') {\n  if (media && media.type === 'VIDEO') request = { url: 'https://graph.facebook.com/v21.0/' + acct + '/videos', body: { file_url: media.url, description: caption } };\n  else if (media) request = { url: 'https://graph.facebook.com/v21.0/' + acct + '/photos', body: { url: media.url, caption } };\n  else request = { url: 'https://graph.facebook.com/v21.0/' + acct + '/feed', body: { message: caption } };\n} else if (pkg.platform === 'INSTAGRAM') {\n  if (media && media.type === 'VIDEO') request = { url: 'https://graph.facebook.com/v21.0/' + acct + '/media', body: { media_type: 'REELS', video_url: media.url, caption } };\n  else if (media) request = { url: 'https://graph.facebook.com/v21.0/' + acct + '/media', body: { image_url: media.url, caption } };\n} else if (pkg.platform === 'TIKTOK') {\n  if (media && media.type === 'VIDEO') {\n    request = {\n      url: 'https://open.tiktokapis.com/v2/post/publish/video/init/',\n      body: {\n        post_info: { title: caption.slice(0, 2200), privacy_level: $env.TIKTOK_PRIVACY_LEVEL || 'SELF_ONLY', disable_comment: false, disable_duet: false, disable_stitch: false },\n        source_info: { source: 'PULL_FROM_URL', video_url: media.url },\n      },\n    };\n  }\n}\nconst unsupported = request ? null : pkg.platform + ' needs ' + (pkg.platform === 'TIKTOK' ? 'a video' : 'an image or video') + ' for this workflow';\nreturn [{ json: { platform: pkg.platform, isVideo: !!(media && media.type === 'VIDEO'), request, unsupported } }];"
+      }
+    },
+    {
+      "id": "dcd5e826-5e8e-bf11-91f2-7ee00a01a236",
+      "name": "Platform",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        20
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "d7dd5cbd-a973-b1a4-7771-c4958535815a",
+                    "leftValue": "={{ $json.unsupported ? \"UNSUPPORTED\" : $json.platform }}",
+                    "rightValue": "FACEBOOK",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "FACEBOOK"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "ac08fa50-7000-d102-d1f8-7a8fcd83ea1a",
+                    "leftValue": "={{ $json.unsupported ? \"UNSUPPORTED\" : $json.platform }}",
+                    "rightValue": "INSTAGRAM",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "INSTAGRAM"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "id": "ddfd7b99-187c-7c8f-9fca-013435521298",
+                    "leftValue": "={{ $json.unsupported ? \"UNSUPPORTED\" : $json.platform }}",
+                    "rightValue": "TIKTOK",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "TIKTOK"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Unsupported"
+        }
+      }
+    },
+    {
+      "id": "8d1d0e51-72d5-6d09-ccad-7df8787b55e9",
+      "name": "Facebook: publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        -200
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpQueryAuth": {
+          "name": "Meta Graph API (access_token)"
+        }
+      },
+      "parameters": {
+        "method": "={{ $json.request.method || \"POST\" }}",
+        "url": "={{ $json.request.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request.body || {}) }}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "a18279b6-5385-d4a1-5847-7bf355e4292b",
+      "name": "Facebook: result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        -220
+      ],
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst id = r.post_id || r.id;\nif (!id) throw new Error('Facebook returned no post id: ' + JSON.stringify(r).slice(0, 500));\nreturn [{ json: { event: { type: 'post.published', data: { externalPostId: String(id), permalink: 'https://www.facebook.com/' + id } } } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "9e047c68-d368-a31f-4fd4-67a87f4702ed",
+      "name": "Instagram: create container",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        20
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpQueryAuth": {
+          "name": "Meta Graph API (access_token)"
+        }
+      },
+      "parameters": {
+        "method": "={{ $json.request.method || \"POST\" }}",
+        "url": "={{ $json.request.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request.body || {}) }}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "911432e4-aa81-5ce8-7bb0-839ffd2e7b65",
+      "name": "Instagram: wait for processing",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1560,
+        0
+      ],
+      "webhookId": "e55ca68f-e963-638b-4efa-0850313c98fd",
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $('Route by platform').first().json.isVideo ? 60 : 5 }}",
+        "unit": "seconds"
+      }
+    },
+    {
+      "id": "309aba1f-fe8a-60d7-3d79-731f6363ed80",
+      "name": "Instagram: publish request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const pkg = $('Verify CRM signature').first().json.pkg;\nconst creationId = $('Instagram: create container').first().json.id;\nreturn [{ json: { request: { url: 'https://graph.facebook.com/v21.0/' + pkg.account.externalAccountId + '/media_publish', body: { creation_id: creationId } } } }];"
+      }
+    },
+    {
+      "id": "e57c1c50-5747-e0f3-1a14-d570fe7b2a02",
+      "name": "Instagram: publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2000,
+        0
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpQueryAuth": {
+          "name": "Meta Graph API (access_token)"
+        }
+      },
+      "parameters": {
+        "method": "={{ $json.request.method || \"POST\" }}",
+        "url": "={{ $json.request.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request.body || {}) }}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "849656f7-1429-90bf-6724-1167b38aa7d1",
+      "name": "Instagram: permalink",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2220,
+        -20
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpQueryAuth": {
+          "name": "Meta Graph API (access_token)"
+        }
+      },
+      "parameters": {
+        "url": "=https://graph.facebook.com/v21.0/{{ $json.id }}?fields=permalink",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpQueryAuth",
+        "options": {}
+      }
+    },
+    {
+      "id": "30676051-3af5-0f13-9915-a8ad84e53e14",
+      "name": "Instagram: result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        -40
+      ],
+      "parameters": {
+        "jsCode": "const id = $('Instagram: publish').first().json.id;\nconst permalink = $input.first().json.permalink;\nreturn [{ json: { event: { type: 'post.published', data: permalink ? { externalPostId: String(id), permalink } : { externalPostId: String(id) } } } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "89d257b0-7bb0-39b0-85e0-046e8fec92e4",
+      "name": "TikTok: publish",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        240
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "TikTok Content Posting (Bearer)"
+        }
+      },
+      "parameters": {
+        "method": "={{ $json.request.method || \"POST\" }}",
+        "url": "={{ $json.request.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request.body || {}) }}",
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "id": "6d66fc03-3fa4-72b7-6207-852b68c62f59",
+      "name": "TikTok: result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1560,
+        220
+      ],
+      "parameters": {
+        "jsCode": "// TikTok publishes asynchronously; the publish_id is the stable external reference.\nconst r = $input.first().json;\nconst err = r.error && r.error.code && r.error.code !== 'ok' ? r.error : null;\nif (err) throw new Error('TikTok: ' + err.code + ' ' + (err.message || ''));\nconst id = r.data && r.data.publish_id;\nif (!id) throw new Error('TikTok returned no publish_id: ' + JSON.stringify(r).slice(0, 500));\nreturn [{ json: { event: { type: 'post.published', data: { externalPostId: String(id) } } } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "7c915ab7-100d-2862-05eb-bd4ab5ee5ad4",
+      "name": "Build post.failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2440,
+        440
+      ],
+      "parameters": {
+        "jsCode": "// Any failed platform call (after retries), unsupported media, or a result node error.\nconst err = $input.first().json.error;\nconst msg = typeof err === 'string' ? err : (err && (err.message || err.description)) || JSON.stringify($input.first().json).slice(0, 1000);\nconst unsupported = $('Route by platform').first().json.unsupported;\nreturn [{ json: { event: { type: 'post.failed', data: { error: String(unsupported || msg).slice(0, 4000) } } } }];"
+      }
+    },
+    {
+      "id": "ae05fe14-6d81-24e3-a673-63073e8e863c",
+      "name": "Sign callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2700,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// Signs a CRM callback with MARKETING_N8N_INBOUND_SECRET. The body sent must be\n// byte-identical to the signed string, so the HTTP node sends it as a raw body.\n// eventId is stable per execution + event type, so n8n retries dedupe in the CRM.\nconst crypto = require('crypto');\nconst secret = $env.MARKETING_N8N_INBOUND_SECRET;\nif (!secret || secret.length < 32) throw new Error('MARKETING_N8N_INBOUND_SECRET is not set on n8n');\nconst pkg = $('Verify CRM signature').first().json.pkg;\nconst url = (pkg.callback && pkg.callback.url) || (($env.CRM_BASE_URL || '').replace(/\\/$/, '') + '/api/marketing/webhooks/n8n');\nif (!/^https?:\\/\\//.test(url)) throw new Error('No callback URL: set MARKETING_PUBLIC_BASE_URL in the CRM or CRM_BASE_URL in n8n');\n\nconst { type, data } = $input.first().json.event;\nconst event = { eventId: $execution.id + ':' + type, type, jobId: pkg.jobId, data };\nconst body = JSON.stringify(event);\nconst timestamp = Math.floor(Date.now() / 1000).toString();\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + body).digest('hex');\nreturn [{ json: { url, body, timestamp, signature, event } }];"
+      }
+    },
+    {
+      "id": "accc3da5-80c3-bdb6-4e75-7bfb6fc0e3cc",
+      "name": "Send callback to CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2920,
+        100
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-mkt-timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "x-mkt-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "CRM webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify CRM signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify CRM signature": {
+      "main": [
+        [
+          {
+            "node": "Signature OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature OK?": {
+      "main": [
+        [
+          {
+            "node": "Accept (202)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accept (202)": {
+      "main": [
+        [
+          {
+            "node": "Route by platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by platform": {
+      "main": [
+        [
+          {
+            "node": "Platform",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Platform": {
+      "main": [
+        [
+          {
+            "node": "Facebook: publish",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Instagram: create container",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "TikTok: publish",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build post.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook: publish": {
+      "main": [
+        [
+          {
+            "node": "Facebook: result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build post.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Facebook: result": {
+      "main": [
+        [
+          {
+            "node": "Sign callback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build post.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram: create container": {
+      "main": [
+        [
+          {
+            "node": "Instagram: wait for processing",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build post.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram: wait for processing": {
+      "main": [
+        [
+          {
+            "node": "Instagram: publish request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram: publish request": {
+      "main": [
+        [
+          {
+            "node": "Instagram: publish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram: publish": {
+      "main": [
+        [
+          {
+            "node": "Instagram: permalink",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build post.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram: permalink": {
+      "main": [
+        [
+          {
+            "node": "Instagram: result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Instagram: result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Instagram: result": {
+      "main": [
+        [
+          {
+            "node": "Sign callback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build post.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok: publish": {
+      "main": [
+        [
+          {
+            "node": "TikTok: result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build post.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TikTok: result": {
+      "main": [
+        [
+          {
+            "node": "Sign callback",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build post.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build post.failed": {
+      "main": [
+        [
+          {
+            "node": "Sign callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign callback": {
+      "main": [
+        [
+          {
+            "node": "Send callback to CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "active": false,
+  "tags": [
+    {
+      "name": "crm-erp-marketing"
+    }
+  ]
+}

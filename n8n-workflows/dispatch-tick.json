@@ -1,0 +1,123 @@
+{
+  "name": "CRM Marketing · Dispatch tick (every minute)",
+  "nodes": [
+    {
+      "id": "cbea6256-37e2-53bc-996f-62a33c9abf5a",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -280
+      ],
+      "parameters": {
+        "content": "## n8n → CRM: dispatcher tick\nEvery minute, POSTs a signed empty JSON body to `{CRM_BASE_URL}/api/marketing/webhooks/dispatch` (HMAC with `MARKETING_N8N_INBOUND_SECRET`). The CRM then sends due posts and queued renders to the other two workflows. Overlapping ticks are safe (the CRM holds a lock and answers `{ ran: false, reason: \"LOCKED\" }`).",
+        "width": 520,
+        "height": 220
+      }
+    },
+    {
+      "id": "2fd0812b-f263-86ea-f0dc-c026812dd681",
+      "name": "Every minute",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "8ae10705-bfec-c00f-1294-a8dfb3524b2c",
+      "name": "Sign tick",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const crypto = require('crypto');\nconst secret = $env.MARKETING_N8N_INBOUND_SECRET;\nconst base = ($env.CRM_BASE_URL || '').replace(/\\/$/, '');\nif (!secret || secret.length < 32) throw new Error('MARKETING_N8N_INBOUND_SECRET is not set on n8n');\nif (!/^https?:\\/\\//.test(base)) throw new Error('CRM_BASE_URL is not set on n8n');\nconst body = '{}';\nconst timestamp = Math.floor(Date.now() / 1000).toString();\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + body).digest('hex');\nreturn [{ json: { url: base + '/api/marketing/webhooks/dispatch', body, timestamp, signature } }];"
+      }
+    },
+    {
+      "id": "7ba2b5de-0819-9970-f233-73e355913cf7",
+      "name": "Run CRM dispatcher",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ],
+      "retryOnFail": false,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-mkt-timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "x-mkt-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every minute": {
+      "main": [
+        [
+          {
+            "node": "Sign tick",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign tick": {
+      "main": [
+        [
+          {
+            "node": "Run CRM dispatcher",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "active": false,
+  "tags": [
+    {
+      "name": "crm-erp-marketing"
+    }
+  ]
+}

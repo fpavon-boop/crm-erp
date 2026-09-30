@@ -1,0 +1,470 @@
+{
+  "name": "CRM Marketing · Video render",
+  "nodes": [
+    {
+      "id": "59879bc3-393e-4df8-a023-ae5cb77d56d2",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        -300
+      ],
+      "parameters": {
+        "content": "## CRM → n8n: video render\nReceives `marketing.video.render/v1` payloads at `POST /webhook/video-render`, verifies the HMAC signature, answers **202**, reports `render.started`, sends the payload to your render service (`RENDER_API_URL`), then reports `render.completed` (https URL + width/height/duration) or `render.failed`.\n\n**Adapt \"Render service\"** to your provider (Creatomate, Shotstack, a CapCut/Canva automation…). It must return JSON: `{ url, width, height, durationSec, sizeBytes?, mimeType? }`.",
+        "width": 560,
+        "height": 260
+      }
+    },
+    {
+      "id": "37f993d6-8200-51f4-b239-704d17c6cfe9",
+      "name": "CRM webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        100
+      ],
+      "webhookId": "8f4bb7ca-f8f8-d1bf-77eb-8f97299c1e4d",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "video-render",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "69f614d2-294c-bcda-2eec-8fe46a08b3e3",
+      "name": "Verify CRM signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        100
+      ],
+      "parameters": {
+        "jsCode": "// Verifies the CRM's HMAC signature (MARKETING_N8N_OUTBOUND_SECRET) over the RAW body:\n// signature = \"sha256=\" + hex(HMAC_SHA256(secret, timestamp + \".\" + rawBody)), 5-minute window.\n// Also enforces the payload schema, matches x-mkt-job-id, and dedupes on the Idempotency-Key.\nconst crypto = require('crypto');\nconst secret = $env.MARKETING_N8N_OUTBOUND_SECRET;\nconst item = $input.first();\nconst headers = item.json.headers || {};\nconst fail = (status, reason) => [{ json: { ok: false, status, reason } }];\n\nlet raw;\ntry {\n  raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n} catch (e) {\n  // Webhook \"Raw Body\" disabled: the CRM sends canonical JSON, which re-serializes identically.\n  raw = JSON.stringify(item.json.body);\n}\n\nif (!secret || secret.length < 32) return fail(500, 'MARKETING_N8N_OUTBOUND_SECRET is not set on n8n');\nconst ts = headers['x-mkt-timestamp'];\nconst sig = headers['x-mkt-signature'];\nif (!ts || !sig) return fail(401, 'missing signature headers');\nif (!/^\\d{1,12}$/.test(ts) || Math.abs(Date.now() / 1000 - Number(ts)) > 300) return fail(401, 'stale or invalid timestamp');\nconst expected = 'sha256=' + crypto.createHmac('sha256', secret).update(ts + '.' + raw).digest('hex');\nconst a = Buffer.from(String(sig));\nconst b = Buffer.from(expected);\nif (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return fail(401, 'bad signature');\n\nlet pkg;\ntry {\n  pkg = JSON.parse(raw);\n} catch (e) {\n  return fail(400, 'body is not JSON');\n}\nif (pkg.schema !== 'marketing.video.render/v1') return fail(400, 'unexpected schema ' + pkg.schema);\nif (headers['x-mkt-job-id'] && headers['x-mkt-job-id'] !== pkg.jobId) return fail(400, 'job id header does not match body');\n\n// At-least-once delivery from the CRM: answer 409 for a job we already accepted\n// (the CRM treats 409 as delivered). Static data persists for ACTIVE workflows.\nconst store = $getWorkflowStaticData('global');\nstore.jobs = store.jobs || {};\nconst key = headers['idempotency-key'] || pkg.jobId;\nif (store.jobs[key]) return fail(409, 'duplicate job ' + key);\nstore.jobs[key] = Date.now();\nconst keys = Object.keys(store.jobs);\nif (keys.length > 1000) keys.sort((x, y) => store.jobs[x] - store.jobs[y]).slice(0, keys.length - 1000).forEach((k) => delete store.jobs[k]);\n\nreturn [{ json: { ok: true, jobId: pkg.jobId, pkg } }];"
+      }
+    },
+    {
+      "id": "994675dc-d3a8-b6d3-9b46-5568f5438bf1",
+      "name": "Signature OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        440,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "83c1cd9e-23a1-d82f-d86d-e99933876148",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "40d1828c-a4db-ca53-4a2a-912f174e444f",
+      "name": "Reject",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: $json.reason }) }}",
+        "options": {
+          "responseCode": "={{ $json.status }}"
+        }
+      }
+    },
+    {
+      "id": "29504800-905d-194f-ccf1-2c825e67a20b",
+      "name": "Accept (202)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        20
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ accepted: true, jobId: $json.jobId }) }}",
+        "options": {
+          "responseCode": 202
+        }
+      }
+    },
+    {
+      "id": "12ef43ae-f088-aca8-6e39-c2a2a773099d",
+      "name": "Build render.started",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        20
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { event: { type: 'render.started', data: {} } } }];"
+      }
+    },
+    {
+      "id": "95118175-bff3-cbce-587b-4953703db892",
+      "name": "Sign render.started",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        20
+      ],
+      "parameters": {
+        "jsCode": "// Signs a CRM callback with MARKETING_N8N_INBOUND_SECRET. The body sent must be\n// byte-identical to the signed string, so the HTTP node sends it as a raw body.\n// eventId is stable per execution + event type, so n8n retries dedupe in the CRM.\nconst crypto = require('crypto');\nconst secret = $env.MARKETING_N8N_INBOUND_SECRET;\nif (!secret || secret.length < 32) throw new Error('MARKETING_N8N_INBOUND_SECRET is not set on n8n');\nconst pkg = $('Verify CRM signature').first().json.pkg;\nconst url = (pkg.callback && pkg.callback.url) || (($env.CRM_BASE_URL || '').replace(/\\/$/, '') + '/api/marketing/webhooks/n8n');\nif (!/^https?:\\/\\//.test(url)) throw new Error('No callback URL: set MARKETING_PUBLIC_BASE_URL in the CRM or CRM_BASE_URL in n8n');\n\nconst { type, data } = $input.first().json.event;\nconst event = { eventId: $execution.id + ':' + type, type, jobId: pkg.jobId, data };\nconst body = JSON.stringify(event);\nconst timestamp = Math.floor(Date.now() / 1000).toString();\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + body).digest('hex');\nreturn [{ json: { url, body, timestamp, signature, event } }];"
+      }
+    },
+    {
+      "id": "9f321570-8fee-1c97-51a5-73c1658dc038",
+      "name": "Send render.started",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        20
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-mkt-timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "x-mkt-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    },
+    {
+      "id": "01293e91-792d-0712-4c5b-d5416f4fea0a",
+      "name": "Render request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        20
+      ],
+      "parameters": {
+        "jsCode": "const pkg = $('Verify CRM signature').first().json.pkg;\nconst url = $env.RENDER_API_URL;\nif (!url) throw new Error('RENDER_API_URL is not set on n8n');\nreturn [{ json: { request: { url, body: pkg } } }];"
+      }
+    },
+    {
+      "id": "57c22ad6-1834-4058-781b-bdeb59db5e3d",
+      "name": "Render service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        20
+      ],
+      "onError": "continueErrorOutput",
+      "retryOnFail": false,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "name": "Render API (header)"
+        }
+      },
+      "parameters": {
+        "method": "={{ $json.request.method || \"POST\" }}",
+        "url": "={{ $json.request.url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.request.body || {}) }}",
+        "options": {
+          "timeout": 1800000
+        }
+      }
+    },
+    {
+      "id": "48600084-7121-b7ef-a501-89b23664bc46",
+      "name": "Build render.completed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        -60
+      ],
+      "parameters": {
+        "jsCode": "// Normalizes the render service response into the CRM's render.completed contract.\nconst r = $input.first().json;\nconst out = r.output || r.result || r;\nconst data = {\n  url: out.url,\n  mimeType: out.mimeType || 'video/mp4',\n  width: Number(out.width),\n  height: Number(out.height),\n  durationSec: Number(out.durationSec ?? out.duration),\n};\nif (out.sizeBytes ?? out.size) data.sizeBytes = Number(out.sizeBytes ?? out.size);\nif (!/^https:\\/\\//.test(data.url || '')) throw new Error('Render output url must be https, got ' + data.url);\nfor (const k of ['width', 'height', 'durationSec']) if (!(data[k] > 0)) throw new Error('Render output missing ' + k);\nreturn [{ json: { event: { type: 'render.completed', data } } }];"
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "d3323541-c43c-24da-7340-197b58de95ae",
+      "name": "Build render.failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const err = $input.first().json.error;\nconst msg = typeof err === 'string' ? err : (err && (err.message || err.description)) || JSON.stringify($input.first().json).slice(0, 1000);\nreturn [{ json: { event: { type: 'render.failed', data: { error: String(msg).slice(0, 4000) } } } }];"
+      }
+    },
+    {
+      "id": "f54b6518-2a99-50eb-dbef-564e44f7af92",
+      "name": "Sign result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        60
+      ],
+      "parameters": {
+        "jsCode": "// Signs a CRM callback with MARKETING_N8N_INBOUND_SECRET. The body sent must be\n// byte-identical to the signed string, so the HTTP node sends it as a raw body.\n// eventId is stable per execution + event type, so n8n retries dedupe in the CRM.\nconst crypto = require('crypto');\nconst secret = $env.MARKETING_N8N_INBOUND_SECRET;\nif (!secret || secret.length < 32) throw new Error('MARKETING_N8N_INBOUND_SECRET is not set on n8n');\nconst pkg = $('Verify CRM signature').first().json.pkg;\nconst url = (pkg.callback && pkg.callback.url) || (($env.CRM_BASE_URL || '').replace(/\\/$/, '') + '/api/marketing/webhooks/n8n');\nif (!/^https?:\\/\\//.test(url)) throw new Error('No callback URL: set MARKETING_PUBLIC_BASE_URL in the CRM or CRM_BASE_URL in n8n');\n\nconst { type, data } = $input.first().json.event;\nconst event = { eventId: $execution.id + ':' + type, type, jobId: pkg.jobId, data };\nconst body = JSON.stringify(event);\nconst timestamp = Math.floor(Date.now() / 1000).toString();\nconst signature = 'sha256=' + crypto.createHmac('sha256', secret).update(timestamp + '.' + body).digest('hex');\nreturn [{ json: { url, body, timestamp, signature, event } }];"
+      }
+    },
+    {
+      "id": "433e3987-65ac-9c76-71d9-f439c5588371",
+      "name": "Send result to CRM",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2440,
+        60
+      ],
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000,
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-mkt-timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "x-mkt-signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 300000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "CRM webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify CRM signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify CRM signature": {
+      "main": [
+        [
+          {
+            "node": "Signature OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature OK?": {
+      "main": [
+        [
+          {
+            "node": "Accept (202)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Accept (202)": {
+      "main": [
+        [
+          {
+            "node": "Build render.started",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build render.started": {
+      "main": [
+        [
+          {
+            "node": "Sign render.started",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign render.started": {
+      "main": [
+        [
+          {
+            "node": "Send render.started",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send render.started": {
+      "main": [
+        [
+          {
+            "node": "Render request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render request": {
+      "main": [
+        [
+          {
+            "node": "Render service",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Render service": {
+      "main": [
+        [
+          {
+            "node": "Build render.completed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build render.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build render.completed": {
+      "main": [
+        [
+          {
+            "node": "Sign result",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build render.failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build render.failed": {
+      "main": [
+        [
+          {
+            "node": "Sign result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign result": {
+      "main": [
+        [
+          {
+            "node": "Send result to CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "active": false,
+  "tags": [
+    {
+      "name": "crm-erp-marketing"
+    }
+  ]
+}
