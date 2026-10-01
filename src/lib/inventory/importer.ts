@@ -1,13 +1,16 @@
 import { prisma } from '@/lib/prisma';
-import { recalculateRefractoryPricing, computeTrueMargin } from './profitability';
+import { recalculateProductFinancials } from './profitability';
+import type { CatalogCategoryGroup, ShippingMethod } from '@prisma/client';
 
 /**
- * Bulk importer for the refractory price-list structure — raw CSV, TSV, or
- * copy-pasted text (e.g. pasted straight from a spreadsheet or PDF table).
- * No product data is hardcoded here: every row's values come from the
- * pasted/uploaded text itself, matched against a flexible header-alias
- * table so minor header spelling differences (case, spacing, "Pcs/Plt" vs
- * "Pcs Per Pallet") don't break the import.
+ * Bulk importer for the whole web catalog — ovens & oven kits, iron doors/
+ * accessories/tools, refractory bricks/mortars/blankets, stains &
+ * enhancers, and anything else sold (including future CUSTOM categories) —
+ * from raw CSV, TSV, or copy-pasted text (e.g. pasted straight from a
+ * spreadsheet or PDF table). No product data is hardcoded here: every
+ * row's values come from the pasted/uploaded text itself, matched against
+ * a flexible header-alias table so minor header spelling differences
+ * (case, spacing, "Pcs/Plt" vs "Pcs Per Pallet") don't break the import.
  */
 
 const HEADER_ALIASES: Record<string, string> = {
@@ -17,9 +20,15 @@ const HEADER_ALIASES: Record<string, string> = {
   'part#': 'partNo',
   sku: 'partNo',
   category: 'category',
+  'category group': 'categoryGroup',
+  categorygroup: 'categoryGroup',
+  type: 'categoryGroup',
+  'product type': 'categoryGroup',
+  producttype: 'categoryGroup',
   product: 'productName',
   'product name': 'productName',
   productname: 'productName',
+  name: 'productName',
   description: 'description',
   desc: 'description',
   'pcs/plt': 'pcsPerPallet',
@@ -30,12 +39,45 @@ const HEADER_ALIASES: Record<string, string> = {
   'weight lbs': 'weightLbs',
   'weight (lbs)': 'weightLbs',
   weightlbs: 'weightLbs',
+  dimensions: 'dimensions',
+  dimension: 'dimensions',
+  size: 'dimensions',
+  'lead time': 'leadTimeDays',
+  'lead time days': 'leadTimeDays',
+  leadtimedays: 'leadTimeDays',
+  leadtime: 'leadTimeDays',
   cost: 'acquisitionCost',
   'acquisition cost': 'acquisitionCost',
   acquisitioncost: 'acquisitionCost',
   freight: 'freightCost',
   'freight cost': 'freightCost',
   freightcost: 'freightCost',
+  'import taxes': 'importTaxesOrFees',
+  'import taxes or fees': 'importTaxesOrFees',
+  'import fees': 'importTaxesOrFees',
+  importtaxesorfees: 'importTaxesOrFees',
+  duty: 'importTaxesOrFees',
+  'packaging cost': 'packagingCost',
+  packagingcost: 'packagingCost',
+  packaging: 'packagingCost',
+  'shrinkage rate': 'shrinkageLossRate',
+  'shrinkage loss rate': 'shrinkageLossRate',
+  shrinkagelossrate: 'shrinkageLossRate',
+  shrinkage: 'shrinkageLossRate',
+  'loss rate': 'shrinkageLossRate',
+  'payment processing fee': 'paymentProcessingFeeRate',
+  'payment processing fee rate': 'paymentProcessingFeeRate',
+  paymentprocessingfeerate: 'paymentProcessingFeeRate',
+  'processing fee': 'paymentProcessingFeeRate',
+  'shipping method': 'shippingMethod',
+  shippingmethod: 'shippingMethod',
+  'ship method': 'shippingMethod',
+  'freight type': 'shippingMethod',
+  freighttype: 'shippingMethod',
+  'freight class': 'freightClass',
+  freightclass: 'freightClass',
+  nmfc: 'freightClass',
+  'nmfc class': 'freightClass',
   distributor: 'distributorPrice',
   'distributor price': 'distributorPrice',
   distributorprice: 'distributorPrice',
@@ -53,16 +95,6 @@ const HEADER_ALIASES: Record<string, string> = {
   markupcontractor: 'markupContractor',
   'markup retail': 'markupRetail',
   markupretail: 'markupRetail',
-  'margin dist': 'trueMarginDist',
-  'true margin dist': 'trueMarginDist',
-  margindist: 'trueMarginDist',
-  'margin cont': 'trueMarginCont',
-  'true margin cont': 'trueMarginCont',
-  margincont: 'trueMarginCont',
-  'margin retail': 'trueMarginRet',
-  'margin ret': 'trueMarginRet',
-  'true margin retail': 'trueMarginRet',
-  marginret: 'trueMarginRet',
 };
 
 type Delimiter = 'tab' | 'comma' | 'whitespace';
@@ -128,15 +160,71 @@ function parseIntField(raw: string | undefined): number | undefined {
   return n === undefined ? undefined : Math.round(n);
 }
 
-export interface ParsedRefractoryRow {
+const CATEGORY_GROUP_VALUES: CatalogCategoryGroup[] = [
+  'OVEN',
+  'IRON_DOOR',
+  'REFRACTORY',
+  'ACCESSORY',
+  'TOOL',
+  'STAIN_ENHANCER',
+  'CUSTOM',
+  'OTHER',
+];
+
+/** Matches an explicit categoryGroup column value (e.g. "oven", "Oven Kit",
+ * "iron-door") against the enum; falls back to keyword inference from the
+ * category/product name when no explicit value is given or it doesn't
+ * match cleanly — never hardcodes a specific product, just generic
+ * category vocabulary. Defaults to OTHER rather than guessing wrong, so
+ * any future product line not yet covered by a named group still imports
+ * cleanly (use categoryGroup=CUSTOM explicitly for a one-off item). */
+function inferCategoryGroup(explicit: string | undefined, category: string | undefined, productName: string): CatalogCategoryGroup {
+  const normalize = (s: string) => s.toUpperCase().replace(/[^A-Z]+/g, '_').replace(/^_+|_+$/g, '');
+
+  if (explicit) {
+    const norm = normalize(explicit);
+    const direct = CATEGORY_GROUP_VALUES.find((v) => norm === v || norm.includes(v) || v.includes(norm));
+    if (direct) return direct;
+  }
+
+  const haystack = `${category || ''} ${productName}`.toLowerCase();
+  if (/\boven/.test(haystack)) return 'OVEN';
+  if (/\biron\s*door|\bdoor\b/.test(haystack)) return 'IRON_DOOR';
+  if (/\brefractor|\bbrick|\bmortar|\bblanket|\bcastable/.test(haystack)) return 'REFRACTORY';
+  if (/\bstain|\benhancer|\bsealer/.test(haystack)) return 'STAIN_ENHANCER';
+  if (/\btool\b/.test(haystack)) return 'TOOL';
+  if (/\baccessor/.test(haystack)) return 'ACCESSORY';
+  return 'OTHER';
+}
+
+/** LTL/heavy-freight items are flagged either by an explicit column or by
+ * keywords ("LTL", "freight", "pallet") in that column's text; everything
+ * else defaults to standard parcel shipping. */
+function inferShippingMethod(explicit: string | undefined): ShippingMethod {
+  if (!explicit) return 'PARCEL';
+  const norm = explicit.toLowerCase();
+  if (/ltl|freight|pallet/.test(norm)) return 'LTL_FREIGHT';
+  return 'PARCEL';
+}
+
+export interface ParsedCatalogRow {
   partNo?: string;
   category?: string;
+  categoryGroup?: string;
   productName: string;
   description?: string;
   pcsPerPallet?: number;
   weightLbs?: number;
+  dimensions?: string;
+  leadTimeDays?: number;
   acquisitionCost?: number;
   freightCost?: number;
+  importTaxesOrFees?: number;
+  packagingCost?: number;
+  shrinkageLossRate?: number;
+  paymentProcessingFeeRate?: number;
+  shippingMethod?: string;
+  freightClass?: string;
   distributorPrice?: number;
   contractorPrice?: number;
   retailPrice?: number;
@@ -146,14 +234,14 @@ export interface ParsedRefractoryRow {
 }
 
 export interface ParseResult {
-  rows: ParsedRefractoryRow[];
+  rows: ParsedCatalogRow[];
   errors: Array<{ line: number; message: string }>;
 }
 
 /** Parses raw CSV/TSV/copy-pasted text into rows. Pure — does not touch the
- * database. Exported separately from importRefractoryProducts so the
- * parsing logic itself is directly unit-testable without a DB. */
-export function parseRefractoryText(raw: string): ParseResult {
+ * database. Exported separately from importCatalogProducts so the parsing
+ * logic itself is directly unit-testable without a DB. */
+export function parseCatalogText(raw: string): ParseResult {
   const lines = raw.split(/\r\n|\n|\r/).filter((l) => l.trim().length > 0);
   if (lines.length < 2) {
     return { rows: [], errors: [{ line: 0, message: 'No data rows found — need a header row plus at least one data row.' }] };
@@ -163,7 +251,7 @@ export function parseRefractoryText(raw: string): ParseResult {
   const headerCells = splitLine(lines[0], delimiter).map(normalizeHeader);
   const fieldKeys = headerCells.map((h) => HEADER_ALIASES[h]);
 
-  const rows: ParsedRefractoryRow[] = [];
+  const rows: ParsedCatalogRow[] = [];
   const errors: Array<{ line: number; message: string }> = [];
 
   for (let i = 1; i < lines.length; i++) {
@@ -182,12 +270,21 @@ export function parseRefractoryText(raw: string): ParseResult {
     rows.push({
       partNo: record.partNo && record.partNo !== '-' ? record.partNo : undefined,
       category: record.category || undefined,
+      categoryGroup: record.categoryGroup || undefined,
       productName,
       description: record.description || undefined,
       pcsPerPallet: parseIntField(record.pcsPerPallet),
       weightLbs: parseNumber(record.weightLbs),
+      dimensions: record.dimensions || undefined,
+      leadTimeDays: parseIntField(record.leadTimeDays),
       acquisitionCost: parseNumber(record.acquisitionCost),
       freightCost: parseNumber(record.freightCost),
+      importTaxesOrFees: parseNumber(record.importTaxesOrFees),
+      packagingCost: parseNumber(record.packagingCost),
+      shrinkageLossRate: parseNumber(record.shrinkageLossRate),
+      paymentProcessingFeeRate: parseNumber(record.paymentProcessingFeeRate),
+      shippingMethod: record.shippingMethod || undefined,
+      freightClass: record.freightClass || undefined,
       distributorPrice: parseNumber(record.distributorPrice),
       contractorPrice: parseNumber(record.contractorPrice),
       retailPrice: parseNumber(record.retailPrice),
@@ -213,6 +310,7 @@ function generatePartNo(productName: string, index: number): string {
 }
 
 const DEFAULT_MARKUPS = { distributor: 20, contractor: 30, retail: 40 };
+const DEFAULT_PAYMENT_PROCESSING_FEE_RATE = 2.9;
 
 export interface ImportSummary {
   created: number;
@@ -221,13 +319,16 @@ export interface ImportSummary {
 }
 
 /**
- * Parses raw text and upserts each row by partNo. Explicitly-provided
- * prices/margins in the source data are trusted as-is; anything not given
- * is computed from acquisitionCost/freightCost/markup via
- * recalculateRefractoryPricing — nothing is ever hardcoded here.
+ * Parses raw text and upserts each row by partNo, across every category in
+ * the catalog. An explicitly-provided distributor/contractor/retail price
+ * in the source data is stored as that tier's PRICE OVERRIDE (so it keeps
+ * taking precedence on future recalculations, e.g. after a cost change),
+ * rather than just being used once for this import. Everything else is
+ * computed from acquisitionCost/freight/fees/markup via
+ * recalculateProductFinancials — nothing is ever hardcoded here.
  */
-export async function importRefractoryProducts(rawText: string): Promise<ImportSummary> {
-  const { rows, errors } = parseRefractoryText(rawText);
+export async function importCatalogProducts(rawText: string): Promise<ImportSummary> {
+  const { rows, errors } = parseCatalogText(rawText);
   let created = 0;
   let updated = 0;
 
@@ -237,54 +338,63 @@ export async function importRefractoryProducts(rawText: string): Promise<ImportS
       const partNo = row.partNo || generatePartNo(row.productName, i);
       const acquisitionCost = row.acquisitionCost ?? 0;
       const freightCost = row.freightCost ?? 0;
+      const importTaxesOrFees = row.importTaxesOrFees ?? 0;
+      const packagingCost = row.packagingCost ?? 0;
+      const shrinkageLossRate = row.shrinkageLossRate ?? 0;
+      const paymentProcessingFeeRate = row.paymentProcessingFeeRate ?? DEFAULT_PAYMENT_PROCESSING_FEE_RATE;
       const markupDistributor = row.markupDistributor ?? DEFAULT_MARKUPS.distributor;
       const markupContractor = row.markupContractor ?? DEFAULT_MARKUPS.contractor;
       const markupRetail = row.markupRetail ?? DEFAULT_MARKUPS.retail;
+      const categoryGroup = inferCategoryGroup(row.categoryGroup, row.category, row.productName);
+      const shippingMethod = inferShippingMethod(row.shippingMethod);
 
-      const computed = recalculateRefractoryPricing({
+      const financials = recalculateProductFinancials({
         acquisitionCost,
         freightCost,
+        importTaxesOrFees,
+        packagingCost,
+        shrinkageLossRate,
+        paymentProcessingFeeRate,
         markupDistributor,
         markupContractor,
         markupRetail,
+        distributorPriceOverride: row.distributorPrice,
+        contractorPriceOverride: row.contractorPrice,
+        retailPriceOverride: row.retailPrice,
       });
-      const totalLandedCost = computed.totalLandedCost;
-      const distributorPrice = row.distributorPrice ?? computed.distributorPrice;
-      const contractorPrice = row.contractorPrice ?? computed.contractorPrice;
-      const retailPrice = row.retailPrice ?? computed.retailPrice;
-      const trueMarginDist =
-        row.distributorPrice !== undefined ? computeTrueMargin(distributorPrice, totalLandedCost) : computed.trueMarginDist;
-      const trueMarginCont =
-        row.contractorPrice !== undefined ? computeTrueMargin(contractorPrice, totalLandedCost) : computed.trueMarginCont;
-      const trueMarginRet =
-        row.retailPrice !== undefined ? computeTrueMargin(retailPrice, totalLandedCost) : computed.trueMarginRet;
 
       const data = {
         category: row.category,
+        categoryGroup,
         productName: row.productName,
         description: row.description,
         pcsPerPallet: row.pcsPerPallet,
         weightLbs: row.weightLbs,
+        dimensions: row.dimensions,
+        leadTimeDays: row.leadTimeDays,
         acquisitionCost,
         freightCost,
-        totalLandedCost,
-        distributorPrice,
-        contractorPrice,
-        retailPrice,
+        importTaxesOrFees,
+        packagingCost,
+        shrinkageLossRate,
+        paymentProcessingFeeRate,
+        shippingMethod,
+        freightClass: row.freightClass,
         markupDistributor,
         markupContractor,
         markupRetail,
-        trueMarginDist,
-        trueMarginCont,
-        trueMarginRet,
+        distributorPriceOverride: row.distributorPrice ?? null,
+        contractorPriceOverride: row.contractorPrice ?? null,
+        retailPriceOverride: row.retailPrice ?? null,
+        ...financials,
       };
 
-      const existing = await prisma.refractoryProduct.findUnique({ where: { partNo } });
+      const existing = await prisma.catalogProduct.findUnique({ where: { partNo } });
       if (existing) {
-        await prisma.refractoryProduct.update({ where: { partNo }, data });
+        await prisma.catalogProduct.update({ where: { partNo }, data });
         updated++;
       } else {
-        await prisma.refractoryProduct.create({ data: { partNo, ...data } });
+        await prisma.catalogProduct.create({ data: { partNo, ...data } });
         created++;
       }
     } catch (err) {
