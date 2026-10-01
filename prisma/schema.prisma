@@ -1956,3 +1956,58 @@ model MarketingLock {
   runId     String?
   updatedAt DateTime  @updatedAt
 }
+
+// =============================================================================
+// Refractory inventory & accounting (distributor/contractor/retail pricing)
+// =============================================================================
+//
+// NOTE: named RefractoryProduct, not Product — a generic `model Product`
+// already exists above (line ~330) and is deeply wired into
+// quotes/sales-orders/invoices/purchasing/WooCommerce sync. This is a
+// separate, independent catalog for the refractory price-list structure
+// (distributor/contractor/retail tiers with landed-cost-based margins) and
+// does not touch or relate to that model.
+
+model RefractoryProduct {
+  id                String                  @id @default(cuid())
+  partNo            String                  @unique
+  category          String?
+  productName       String
+  description       String?
+  pcsPerPallet      Int?
+  weightLbs         Decimal?                @db.Decimal(10, 2)
+  acquisitionCost   Decimal                 @db.Decimal(14, 2)
+  freightCost       Decimal                 @default(0) @db.Decimal(14, 2)
+  totalLandedCost   Decimal                 @db.Decimal(14, 2)
+  distributorPrice  Decimal                 @db.Decimal(14, 2)
+  contractorPrice   Decimal                 @db.Decimal(14, 2)
+  retailPrice       Decimal                 @db.Decimal(14, 2)
+  markupDistributor Decimal                 @default(20) @db.Decimal(5, 2)
+  markupContractor  Decimal                 @default(30) @db.Decimal(5, 2)
+  markupRetail      Decimal                 @default(40) @db.Decimal(5, 2)
+  trueMarginDist    Decimal                 @db.Decimal(5, 2)
+  trueMarginCont    Decimal                 @db.Decimal(5, 2)
+  trueMarginRet     Decimal                 @db.Decimal(5, 2)
+  isActive          Boolean                 @default(true)
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  priceAuditLogs    RefractoryPriceAuditLog[]
+
+  @@index([category])
+  @@index([isActive])
+}
+
+model RefractoryPriceAuditLog {
+  id            String            @id @default(cuid())
+  productId     String
+  product       RefractoryProduct @relation(fields: [productId], references: [id], onDelete: Cascade)
+  oldCost       Decimal           @db.Decimal(14, 2)
+  newCost       Decimal           @db.Decimal(14, 2)
+  oldFreight    Decimal           @db.Decimal(14, 2)
+  newFreight    Decimal           @db.Decimal(14, 2)
+  triggerReason String?
+  changedAt     DateTime          @default(now())
+
+  @@index([productId])
+}
