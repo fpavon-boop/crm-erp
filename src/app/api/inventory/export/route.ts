@@ -19,6 +19,7 @@ const CSV_COLUMNS = [
   'shrinkageLossRate',
   'paymentProcessingFeeRate',
   'totalLandedCost',
+  'costIsEstimated',
   'shippingMethod',
   'freightClass',
   'markupDistributor',

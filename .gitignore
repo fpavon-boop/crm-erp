@@ -15,3 +15,6 @@ next-env.d.ts
 tsconfig.tsbuildinfo
 .pnpm-store/
 coverage/
+
+# Price-list workbooks hold company pricing data - never commit them
+CTBOS-Complete-Price-List*.xlsx

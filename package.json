@@ -15,6 +15,7 @@
     "prisma:migrate": "prisma migrate deploy",
     "prisma:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
+    "sync-prices": "tsx scripts/sync-prices.ts",
     "test": "vitest run",
     "worker": "tsx src/worker/index.ts"
   },
@@ -25,6 +26,7 @@
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
     "dotenv": "^16.6.1",
+    "exceljs": "^4.4.0",
     "imapflow": "^1.0.171",
     "lucide-react": "^0.446.0",
     "mailparser": "^3.7.1",

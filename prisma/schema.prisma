@@ -2021,6 +2021,10 @@ model CatalogProduct {
   // the SELLING price when computing net profit — not part of landed cost.
   paymentProcessingFeeRate  Decimal              @default(2.9) @db.Decimal(5, 2)
   totalLandedCost           Decimal              @db.Decimal(14, 2)
+  // True when acquisitionCost is only an estimate (e.g. retail ÷ 1.40 from
+  // the price-list sync) rather than a real purchase cost — so margins and
+  // exports can show it, and nothing downstream treats the figure as real.
+  costIsEstimated           Boolean              @default(false)
 
   // --- Pricing tiers: markup-computed unless an override is set ---
   markupDistributor         Decimal              @default(20) @db.Decimal(5, 2)

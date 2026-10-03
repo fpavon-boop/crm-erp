@@ -6,7 +6,7 @@ const nextConfig = {
   },
   experimental: {
     instrumentationHook: true,
-    serverComponentsExternalPackages: ['pdfkit', 'imapflow', 'mailparser', 'nodemailer'],
+    serverComponentsExternalPackages: ['pdfkit', 'imapflow', 'mailparser', 'nodemailer', 'exceljs'],
   },
   // Phase 8 (SYSTEM_AUDIT.md D7): nothing in this app uses next/image, but
   // Next's built-in Image Optimization API (/_next/image) is on by default

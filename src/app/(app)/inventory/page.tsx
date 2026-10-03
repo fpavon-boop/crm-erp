@@ -6,10 +6,10 @@ import Badge from '@/components/Badge';
 import Pagination from '@/components/Pagination';
 import { parsePage, pageWindow } from '@/lib/pagination';
 import { money } from '@/lib/format';
-import { Plus, Download, Warehouse } from 'lucide-react';
+import { Plus, Download, Warehouse, FileSpreadsheet } from 'lucide-react';
 
 export default async function InventoryPage({ searchParams }: { searchParams: { q?: string; page?: string } }) {
-  await requireModule('inventory');
+  const session = await requireModule('inventory');
   const q = searchParams.q?.trim();
   const page = parsePage(searchParams.page);
 
@@ -32,6 +32,9 @@ export default async function InventoryPage({ searchParams }: { searchParams: { 
         subtitle={`${total} products`}
         actions={
           <>
+            {session.user.role === 'ADMIN' && (
+              <Link href="/inventory/sync-prices" className="btn-secondary"><FileSpreadsheet size={16} /> Sync prices</Link>
+            )}
             <Link href="/inventory/warehouses" className="btn-secondary"><Warehouse size={16} /> Warehouses</Link>
             <a href={`/api/products?format=csv${q ? `&q=${q}` : ''}`} className="btn-secondary"><Download size={16} /> Export CSV</a>
             <Link href="/inventory/new" className="btn-primary"><Plus size={16} /> New Product</Link>
